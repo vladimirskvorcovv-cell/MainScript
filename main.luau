@@ -1052,6 +1052,146 @@ clickTargetMark.Parent = clickTargetMarker
 
 clickTargetMarker.Position = saveClickTargetPosition(clickTargetMarker.Position)
 
+local ESP = {
+	Enabled = false,
+	_conn = nil,
+	_boxes = {},
+}
+
+local function getEspBox(player)
+	local box = ESP._boxes[player]
+	if box and box.Parent then
+		return box
+	end
+
+	box = Instance.new("Frame")
+	box.Name = "ESP_" .. player.Name
+	box.BackgroundTransparency = 1
+	box.BorderSizePixel = 0
+	box.Visible = false
+	box.ZIndex = 25
+	box.Parent = screenGui
+	addStroke(box, Color3.fromRGB(255, 80, 80), 0)
+	ESP._boxes[player] = box
+
+	return box
+end
+
+local function getCharacterBox(character)
+	local ok, cframe, size = pcall(function()
+		return character:GetBoundingBox()
+	end)
+	if not ok then
+		return nil
+	end
+
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+
+	local minX = math.huge
+	local minY = math.huge
+	local maxX = -math.huge
+	local maxY = -math.huge
+	local visible = false
+
+	for _, x in ipairs({ -0.5, 0.5 }) do
+		for _, y in ipairs({ -0.5, 0.5 }) do
+			for _, z in ipairs({ -0.5, 0.5 }) do
+				local world = cframe:PointToWorldSpace(Vector3.new(size.X * x, size.Y * y, size.Z * z))
+				local point, onScreen = camera:WorldToViewportPoint(world)
+				if point.Z > 0 then
+					minX = math.min(minX, point.X)
+					minY = math.min(minY, point.Y)
+					maxX = math.max(maxX, point.X)
+					maxY = math.max(maxY, point.Y)
+					visible = visible or onScreen
+				end
+			end
+		end
+	end
+
+	if not visible or minX == math.huge then
+		return nil
+	end
+
+	local viewport = getViewportSize()
+	minX = math.clamp(minX, 0, viewport.X)
+	minY = math.clamp(minY, 0, viewport.Y)
+	maxX = math.clamp(maxX, 0, viewport.X)
+	maxY = math.clamp(maxY, 0, viewport.Y)
+
+	local width = maxX - minX
+	local height = maxY - minY
+	if width < 4 or height < 4 then
+		return nil
+	end
+
+	return minX, minY, width, height
+end
+
+local function updateESP()
+	local alive = {}
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		alive[player] = true
+		local box = getEspBox(player)
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if character and humanoid and humanoid.Health > 0 then
+			local x, y, width, height = getCharacterBox(character)
+			if x then
+				box.Position = UDim2.fromOffset(x, y)
+				box.Size = UDim2.fromOffset(width, height)
+				box.Visible = true
+			else
+				box.Visible = false
+			end
+		else
+			box.Visible = false
+		end
+	end
+
+	for player, box in pairs(ESP._boxes) do
+		if not alive[player] or not player.Parent then
+			box:Destroy()
+			ESP._boxes[player] = nil
+		end
+	end
+end
+
+function ESP.start()
+	if ESP.Enabled then
+		return true
+	end
+	ESP.Enabled = true
+	ESP._conn = RunService.RenderStepped:Connect(updateESP)
+	updateESP()
+	return true
+end
+
+function ESP.stop()
+	if not ESP.Enabled and not ESP._conn then
+		return true
+	end
+	ESP.Enabled = false
+	disconnect(ESP._conn)
+	ESP._conn = nil
+	for player, box in pairs(ESP._boxes) do
+		box:Destroy()
+		ESP._boxes[player] = nil
+	end
+	return true
+end
+
+function ESP.toggle(state)
+	if state then
+		return ESP.start()
+	end
+	return ESP.stop()
+end
+
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
@@ -1195,12 +1335,13 @@ end
 local flyControl = createSwitch("Fly", 1, Fly.toggle)
 local antiAfkControl = createSwitch("AntiAFK", 2, AntiAFK.toggle)
 local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
+local espControl = createSwitch("ESP", 4, ESP.toggle)
 local invisibilityControl = nil
 if Invisibility.isSupported() then
-	invisibilityControl = createSwitch("Invisibility", 4, Invisibility.toggle)
+	invisibilityControl = createSwitch("Invisibility", 5, Invisibility.toggle)
 end
 
-local speedRow = createRow("FlySpeedRow", 5)
+local speedRow = createRow("FlySpeedRow", 6)
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Name = "Label"
@@ -1559,6 +1700,9 @@ updateMiniStatus = function()
 	if invisibilityControl and invisibilityControl.isEnabled() then
 		table.insert(active, "I")
 	end
+	if espControl.isEnabled() then
+		table.insert(active, "E")
+	end
 	miniStatus.Text = table.concat(active, " ")
 end
 updateMiniStatus()
@@ -1833,6 +1977,7 @@ track(screenGui.Destroying:Connect(function()
 	NoClip.stop()
 	AntiAFK.toggle(false)
 	Clicker.stop()
+	ESP.stop()
 	if invisibilityControl then
 		Invisibility.toggle(false)
 	end
