@@ -18,6 +18,9 @@ local Config = {
 	MaxSpeed = 300,
 	FlySmooth = 10,
 	Hotkey = Enum.KeyCode.F,
+	AntiAFKHotkey = Enum.KeyCode.G,
+	NoClipHotkey = Enum.KeyCode.N,
+	ClickerHotkey = Enum.KeyCode.C,
 	AntiAFKInterval = 120,
 	KeyTapTime = 0.08,
 	ClickInterval = 0.1,
@@ -503,6 +506,14 @@ end
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
 local sessionState = storage.FlyAntiAFK_State
+sessionState.Hotkeys = sessionState.Hotkeys or {}
+
+for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey" }) do
+	local keyName = sessionState.Hotkeys[configKey]
+	if type(keyName) == "string" and Enum.KeyCode[keyName] then
+		Config[configKey] = Enum.KeyCode[keyName]
+	end
+end
 
 local guiParent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
 local existing = guiParent:FindFirstChild("FlyAntiAFK_GUI")
@@ -975,60 +986,81 @@ track(clickDelayBox.FocusLost:Connect(function()
 	clickDelayBox.Text = tostring(Config.ClickInterval)
 end))
 
-local hotkeyRow = createRow("FlyHotkeyRow", 5)
+local bindingHotkey = nil
+local hotkeyBindings = {}
 
-local hotkeyLabel = Instance.new("TextLabel")
-hotkeyLabel.Name = "Label"
-hotkeyLabel.Size = UDim2.new(1, -132, 1, 0)
-hotkeyLabel.Position = UDim2.fromOffset(12, 0)
-hotkeyLabel.BackgroundTransparency = 1
-hotkeyLabel.Text = "Fly hotkey"
-hotkeyLabel.Font = Enum.Font.GothamMedium
-hotkeyLabel.TextSize = 14
-hotkeyLabel.TextColor3 = Theme.Text
-hotkeyLabel.TextXAlignment = Enum.TextXAlignment.Left
-hotkeyLabel.Parent = hotkeyRow
-
-local hotkeyValue = Instance.new("TextLabel")
-hotkeyValue.Name = "Value"
-hotkeyValue.Size = UDim2.fromOffset(42, 30)
-hotkeyValue.Position = UDim2.new(1, -112, 0.5, -15)
-hotkeyValue.BackgroundColor3 = Theme.PanelSoft
-hotkeyValue.BorderSizePixel = 0
-hotkeyValue.Text = Config.Hotkey.Name
-hotkeyValue.Font = Enum.Font.GothamBold
-hotkeyValue.TextSize = 13
-hotkeyValue.TextColor3 = Theme.Text
-hotkeyValue.Parent = hotkeyRow
-addCorner(hotkeyValue, 6)
-
-local bindButton = Instance.new("TextButton")
-bindButton.Name = "Bind"
-bindButton.Size = UDim2.fromOffset(62, 30)
-bindButton.Position = UDim2.new(1, -66, 0.5, -15)
-bindButton.BackgroundColor3 = Theme.Button
-bindButton.BorderSizePixel = 0
-bindButton.Text = "Bind"
-bindButton.Font = Enum.Font.GothamBold
-bindButton.TextSize = 13
-bindButton.TextColor3 = Theme.Text
-bindButton.AutoButtonColor = true
-bindButton.Parent = hotkeyRow
-addCorner(bindButton, 6)
-updateCanvasSize()
-
-local bindingHotkey = false
-
-local function updateHotkeyUi()
-	hotkeyValue.Text = Config.Hotkey.Name
-	bindButton.Text = bindingHotkey and "..." or "Bind"
-	bindButton.BackgroundColor3 = bindingHotkey and Theme.AccentDark or Theme.Button
+local function updateHotkeyBindings()
+	for _, binding in ipairs(hotkeyBindings) do
+		binding.value.Text = Config[binding.configKey].Name
+		binding.button.Text = bindingHotkey == binding and "..." or "Bind"
+		binding.button.BackgroundColor3 = bindingHotkey == binding and Theme.AccentDark or Theme.Button
+	end
 end
 
-track(bindButton.MouseButton1Click:Connect(function()
-	bindingHotkey = not bindingHotkey
-	updateHotkeyUi()
-end))
+local function createHotkeyRow(text, order, configKey, parentPage)
+	local row = createRow(text .. "HotkeyRow", order, parentPage)
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Label"
+	label.Size = UDim2.new(1, -132, 1, 0)
+	label.Position = UDim2.fromOffset(12, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text .. " bind"
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 14
+	label.TextColor3 = Theme.Text
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local value = Instance.new("TextLabel")
+	value.Name = "Value"
+	value.Size = UDim2.fromOffset(42, 30)
+	value.Position = UDim2.new(1, -112, 0.5, -15)
+	value.BackgroundColor3 = Theme.PanelSoft
+	value.BorderSizePixel = 0
+	value.Text = Config[configKey].Name
+	value.Font = Enum.Font.GothamBold
+	value.TextSize = 13
+	value.TextColor3 = Theme.Text
+	value.Parent = row
+	addCorner(value, 6)
+
+	local button = Instance.new("TextButton")
+	button.Name = "Bind"
+	button.Size = UDim2.fromOffset(62, 30)
+	button.Position = UDim2.new(1, -66, 0.5, -15)
+	button.BackgroundColor3 = Theme.Button
+	button.BorderSizePixel = 0
+	button.Text = "Bind"
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 13
+	button.TextColor3 = Theme.Text
+	button.AutoButtonColor = true
+	button.Parent = row
+	addCorner(button, 6)
+
+	local binding = {
+		button = button,
+		value = value,
+		configKey = configKey,
+	}
+
+	table.insert(hotkeyBindings, binding)
+
+	track(button.MouseButton1Click:Connect(function()
+		bindingHotkey = if bindingHotkey == binding then nil else binding
+		updateHotkeyBindings()
+	end))
+
+	return binding
+end
+
+createHotkeyRow("Fly", 5, "Hotkey")
+createHotkeyRow("AntiAFK", 6, "AntiAFKHotkey")
+createHotkeyRow("NoClip", 7, "NoClipHotkey")
+createHotkeyRow("Clicker", 3, "ClickerHotkey", clickerPage)
+updateHotkeyBindings()
+updateCanvasSize()
 
 local function setContentVisible(visible)
 	topBar.Visible = visible
@@ -1186,19 +1218,26 @@ track(miniButton.MouseButton1Click:Connect(expandGui))
 track(UserInputService.InputBegan:Connect(function(input, processed)
 	if bindingHotkey then
 		if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
-			Config.Hotkey = input.KeyCode
-			bindingHotkey = false
-			updateHotkeyUi()
+			Config[bindingHotkey.configKey] = input.KeyCode
+			sessionState.Hotkeys[bindingHotkey.configKey] = input.KeyCode.Name
+			bindingHotkey = nil
+			updateHotkeyBindings()
 		end
 		return
 	end
 
-	if processed then
+	if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then
 		return
 	end
 
 	if input.KeyCode == Config.Hotkey then
 		flyControl.toggle()
+	elseif input.KeyCode == Config.AntiAFKHotkey then
+		antiAfkControl.toggle()
+	elseif input.KeyCode == Config.NoClipHotkey then
+		noClipControl.toggle()
+	elseif input.KeyCode == Config.ClickerHotkey then
+		clickerControl.toggle()
 	end
 end))
 
