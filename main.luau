@@ -5,6 +5,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
 local VirtualInputManager = select(2, pcall(function()
 	return game:GetService("VirtualInputManager")
 end))
@@ -21,11 +22,17 @@ local Config = {
 	AntiAFKHotkey = Enum.KeyCode.G,
 	NoClipHotkey = Enum.KeyCode.N,
 	ClickerHotkey = Enum.KeyCode.C,
+	GuiHotkey = Enum.KeyCode.RightShift,
 	AntiAFKInterval = 120,
+	MinAntiAFKInterval = 10,
+	MaxAntiAFKInterval = 3600,
 	KeyTapTime = 0.08,
 	ClickInterval = 0.1,
 	MinClickInterval = 0.03,
 	MaxClickInterval = 10,
+	MinFastSpeed = 1,
+	MaxFastSpeed = 600,
+	ClickButton = "Left",
 }
 
 local Theme = {
@@ -107,9 +114,10 @@ local function clickMouse()
 	end
 	local ok, err = pcall(function()
 		local position = UserInputService:GetMouseLocation()
-		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
+		local buttonIndex = Config.ClickButton == "Right" and 1 or 0
+		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, buttonIndex, true, game, 0)
 		task.wait(0.015)
-		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
+		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, buttonIndex, false, game, 0)
 	end)
 	if not ok then
 		return false, err
@@ -506,13 +514,115 @@ end
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
 local sessionState = storage.FlyAntiAFK_State
-sessionState.Hotkeys = sessionState.Hotkeys or {}
+local settingsFile = "FlyAntiAFK_Settings.json"
 
-for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey" }) do
+local function canReadSettings()
+	return type(readfile) == "function" and type(isfile) == "function"
+end
+
+local function canWriteSettings()
+	return type(writefile) == "function"
+end
+
+local function loadSettings()
+	if not canReadSettings() or not isfile(settingsFile) then
+		return nil
+	end
+	local ok, raw = pcall(readfile, settingsFile)
+	if not ok or type(raw) ~= "string" or raw == "" then
+		return nil
+	end
+	local decodedOk, decoded = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+	if decodedOk and type(decoded) == "table" then
+		return decoded
+	end
+	return nil
+end
+
+local function mergeSettings(saved)
+	if type(saved) ~= "table" then
+		return
+	end
+	if type(saved.Hotkeys) == "table" then
+		sessionState.Hotkeys = saved.Hotkeys
+	end
+	if type(saved.Settings) == "table" then
+		sessionState.Settings = saved.Settings
+	end
+	if type(saved.ExpandedPosition) == "table" then
+		sessionState.ExpandedPosition = saved.ExpandedPosition
+	end
+	if type(saved.CollapsedPosition) == "table" then
+		sessionState.CollapsedPosition = saved.CollapsedPosition
+	end
+	if type(saved.Collapsed) == "boolean" then
+		sessionState.Collapsed = saved.Collapsed
+	end
+end
+
+mergeSettings(loadSettings())
+sessionState.Hotkeys = sessionState.Hotkeys or {}
+sessionState.Settings = sessionState.Settings or {}
+
+local saveQueued = false
+
+local function saveSettingsNow()
+	if not canWriteSettings() then
+		return
+	end
+	local payload = {
+		Hotkeys = sessionState.Hotkeys,
+		Settings = sessionState.Settings,
+		ExpandedPosition = sessionState.ExpandedPosition,
+		CollapsedPosition = sessionState.CollapsedPosition,
+		Collapsed = sessionState.Collapsed,
+	}
+	pcall(function()
+		writefile(settingsFile, HttpService:JSONEncode(payload))
+	end)
+end
+
+local function queueSaveSettings()
+	if saveQueued then
+		return
+	end
+	saveQueued = true
+	task.delay(0.5, function()
+		saveQueued = false
+		saveSettingsNow()
+	end)
+end
+
+for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "GuiHotkey" }) do
 	local keyName = sessionState.Hotkeys[configKey]
 	if type(keyName) == "string" and Enum.KeyCode[keyName] then
 		Config[configKey] = Enum.KeyCode[keyName]
 	end
+end
+
+local function applySavedNumber(configKey, minValue, maxValue)
+	local value = clampNumber(sessionState.Settings[configKey], minValue, maxValue)
+	if value then
+		Config[configKey] = value
+	end
+end
+
+applySavedNumber("FlySpeed", Config.MinSpeed, Config.MaxSpeed)
+applySavedNumber("FastSpeed", Config.MinFastSpeed, Config.MaxFastSpeed)
+applySavedNumber("AntiAFKInterval", Config.MinAntiAFKInterval, Config.MaxAntiAFKInterval)
+applySavedNumber("ClickInterval", Config.MinClickInterval, Config.MaxClickInterval)
+
+if sessionState.Settings.ClickButton == "Right" then
+	Config.ClickButton = "Right"
+else
+	Config.ClickButton = "Left"
+end
+
+local function saveConfigValue(configKey)
+	sessionState.Settings[configKey] = Config[configKey]
+	queueSaveSettings()
 end
 
 local guiParent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
@@ -598,6 +708,7 @@ local function savePosition(key, position)
 		X = math.floor(position.X.Offset),
 		Y = math.floor(position.Y.Offset),
 	}
+	queueSaveSettings()
 end
 
 local function loadPosition(key, fallback)
@@ -645,7 +756,7 @@ title.Name = "Title"
 title.Size = UDim2.new(1, -92, 1, 0)
 title.Position = UDim2.fromOffset(12, 0)
 title.BackgroundTransparency = 1
-title.Text = "Fly AntiAFK"
+title.Text = "by @Kryv1x"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 15
 title.TextColor3 = Theme.Text
@@ -705,6 +816,7 @@ end
 
 local mainTab = createTab("MainTab", "Main", 0)
 local clickerTab = createTab("ClickerTab", "Clicker", 94)
+local settingsTab = createTab("SettingsTab", "Settings", 188)
 
 local function createPage(name)
 	local scrollingPage = Instance.new("ScrollingFrame")
@@ -731,28 +843,39 @@ end
 
 local page, pageLayout = createPage("MainPage")
 local clickerPage, clickerPageLayout = createPage("ClickerPage")
+local settingsPage, settingsPageLayout = createPage("SettingsPage")
 clickerPage.Visible = false
+settingsPage.Visible = false
 
 local function updateCanvasSize()
 	page.CanvasSize = UDim2.fromOffset(0, pageLayout.AbsoluteContentSize.Y + 8)
 	clickerPage.CanvasSize = UDim2.fromOffset(0, clickerPageLayout.AbsoluteContentSize.Y + 8)
+	settingsPage.CanvasSize = UDim2.fromOffset(0, settingsPageLayout.AbsoluteContentSize.Y + 8)
 end
 
 local function selectTab(name)
 	local mainActive = name == "Main"
+	local clickerActive = name == "Clicker"
+	local settingsActive = name == "Settings"
 	page.Visible = mainActive
-	clickerPage.Visible = not mainActive
+	clickerPage.Visible = clickerActive
+	settingsPage.Visible = settingsActive
 	mainTab.BackgroundColor3 = mainActive and Theme.AccentDark or Theme.Button
-	clickerTab.BackgroundColor3 = mainActive and Theme.Button or Theme.AccentDark
+	clickerTab.BackgroundColor3 = clickerActive and Theme.AccentDark or Theme.Button
+	settingsTab.BackgroundColor3 = settingsActive and Theme.AccentDark or Theme.Button
 end
 
 track(pageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvasSize))
 track(clickerPageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvasSize))
+track(settingsPageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvasSize))
 track(mainTab.MouseButton1Click:Connect(function()
 	selectTab("Main")
 end))
 track(clickerTab.MouseButton1Click:Connect(function()
 	selectTab("Clicker")
+end))
+track(settingsTab.MouseButton1Click:Connect(function()
+	selectTab("Settings")
 end))
 selectTab("Main")
 
@@ -762,15 +885,27 @@ miniButton.Size = collapsedSize
 miniButton.Position = collapsed and clampOffsetPosition(collapsedPosition, collapsedSize) or frame.Position
 miniButton.BackgroundColor3 = Theme.AccentDark
 miniButton.BorderSizePixel = 0
-miniButton.Text = "FA"
+miniButton.Text = "◆"
 miniButton.Font = Enum.Font.GothamBold
-miniButton.TextSize = 15
+miniButton.TextSize = 18
 miniButton.TextColor3 = Theme.Text
 miniButton.Visible = collapsed
 miniButton.Active = true
 miniButton.Parent = screenGui
 addCorner(miniButton, 8)
 addStroke(miniButton, Theme.Stroke, 0.2)
+
+local miniStatus = Instance.new("TextLabel")
+miniStatus.Name = "ActiveStatus"
+miniStatus.Size = UDim2.new(1, -4, 0, 12)
+miniStatus.Position = UDim2.new(0, 2, 1, -14)
+miniStatus.BackgroundTransparency = 1
+miniStatus.Text = ""
+miniStatus.Font = Enum.Font.GothamBold
+miniStatus.TextSize = 9
+miniStatus.TextColor3 = Theme.Text
+miniStatus.TextXAlignment = Enum.TextXAlignment.Center
+miniStatus.Parent = miniButton
 
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
@@ -784,6 +919,8 @@ local function createRow(name, order, parentPage)
 	addStroke(row, Theme.Stroke, 0.45)
 	return row
 end
+
+local updateMiniStatus = nil
 
 local function createSwitch(text, order, onChanged, parentPage)
 	local row = createRow(text .. "Row", order, parentPage)
@@ -843,6 +980,9 @@ local function createSwitch(text, order, onChanged, parentPage)
 	function control.setState(state)
 		enabled = state == true
 		render(false)
+		if updateMiniStatus then
+			updateMiniStatus()
+		end
 	end
 
 	function control.set(state)
@@ -867,6 +1007,9 @@ local function createSwitch(text, order, onChanged, parentPage)
 		end
 
 		busy = false
+		if updateMiniStatus then
+			updateMiniStatus()
+		end
 	end
 
 	function control.toggle()
@@ -942,6 +1085,7 @@ track(speedBox.FocusLost:Connect(function()
 	local value = clampNumber(speedBox.Text, Config.MinSpeed, Config.MaxSpeed)
 	if value then
 		Config.FlySpeed = value
+		saveConfigValue("FlySpeed")
 	end
 	speedBox.Text = tostring(Config.FlySpeed)
 end))
@@ -982,8 +1126,43 @@ track(clickDelayBox.FocusLost:Connect(function()
 	local value = clampNumber(clickDelayBox.Text, Config.MinClickInterval, Config.MaxClickInterval)
 	if value then
 		Config.ClickInterval = value
+		saveConfigValue("ClickInterval")
 	end
 	clickDelayBox.Text = tostring(Config.ClickInterval)
+end))
+
+local clickModeRow = createRow("ClickModeRow", 3, clickerPage)
+
+local clickModeLabel = Instance.new("TextLabel")
+clickModeLabel.Name = "Label"
+clickModeLabel.Size = UDim2.new(0.5, -12, 1, 0)
+clickModeLabel.Position = UDim2.fromOffset(12, 0)
+clickModeLabel.BackgroundTransparency = 1
+clickModeLabel.Text = "Click mode"
+clickModeLabel.Font = Enum.Font.GothamMedium
+clickModeLabel.TextSize = 14
+clickModeLabel.TextColor3 = Theme.Text
+clickModeLabel.TextXAlignment = Enum.TextXAlignment.Left
+clickModeLabel.Parent = clickModeRow
+
+local clickModeButton = Instance.new("TextButton")
+clickModeButton.Name = "ModeButton"
+clickModeButton.Size = UDim2.fromOffset(82, 30)
+clickModeButton.Position = UDim2.new(1, -94, 0.5, -15)
+clickModeButton.BackgroundColor3 = Theme.PanelSoft
+clickModeButton.BorderSizePixel = 0
+clickModeButton.Font = Enum.Font.GothamBold
+clickModeButton.TextSize = 13
+clickModeButton.TextColor3 = Theme.Text
+clickModeButton.AutoButtonColor = true
+clickModeButton.Text = Config.ClickButton
+clickModeButton.Parent = clickModeRow
+addCorner(clickModeButton, 6)
+
+track(clickModeButton.MouseButton1Click:Connect(function()
+	Config.ClickButton = Config.ClickButton == "Left" and "Right" or "Left"
+	clickModeButton.Text = Config.ClickButton
+	saveConfigValue("ClickButton")
 end))
 
 local bindingHotkey = nil
@@ -1055,12 +1234,146 @@ local function createHotkeyRow(text, order, configKey, parentPage)
 	return binding
 end
 
-createHotkeyRow("Fly", 5, "Hotkey")
-createHotkeyRow("AntiAFK", 6, "AntiAFKHotkey")
-createHotkeyRow("NoClip", 7, "NoClipHotkey")
-createHotkeyRow("Clicker", 3, "ClickerHotkey", clickerPage)
+createHotkeyRow("Fly", 1, "Hotkey", settingsPage)
+createHotkeyRow("AntiAFK", 2, "AntiAFKHotkey", settingsPage)
+createHotkeyRow("NoClip", 3, "NoClipHotkey", settingsPage)
+createHotkeyRow("Clicker", 4, "ClickerHotkey", settingsPage)
+createHotkeyRow("GUI", 5, "GuiHotkey", settingsPage)
+
+local fastSpeedRow = createRow("FastFlySpeedRow", 6, settingsPage)
+
+local fastSpeedLabel = Instance.new("TextLabel")
+fastSpeedLabel.Name = "Label"
+fastSpeedLabel.Size = UDim2.new(0.5, -12, 1, 0)
+fastSpeedLabel.Position = UDim2.fromOffset(12, 0)
+fastSpeedLabel.BackgroundTransparency = 1
+fastSpeedLabel.Text = "Fast fly speed"
+fastSpeedLabel.Font = Enum.Font.GothamMedium
+fastSpeedLabel.TextSize = 14
+fastSpeedLabel.TextColor3 = Theme.Text
+fastSpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+fastSpeedLabel.Parent = fastSpeedRow
+
+local fastSpeedBox = Instance.new("TextBox")
+fastSpeedBox.Name = "FastSpeedBox"
+fastSpeedBox.Size = UDim2.fromOffset(82, 30)
+fastSpeedBox.Position = UDim2.new(1, -94, 0.5, -15)
+fastSpeedBox.BackgroundColor3 = Theme.PanelSoft
+fastSpeedBox.BorderSizePixel = 0
+fastSpeedBox.Font = Enum.Font.GothamMedium
+fastSpeedBox.TextSize = 14
+fastSpeedBox.TextColor3 = Theme.Text
+fastSpeedBox.PlaceholderColor3 = Theme.Muted
+fastSpeedBox.Text = tostring(Config.FastSpeed)
+fastSpeedBox.PlaceholderText = "Speed"
+fastSpeedBox.ClearTextOnFocus = false
+fastSpeedBox.Parent = fastSpeedRow
+addCorner(fastSpeedBox, 6)
+
+track(fastSpeedBox.FocusLost:Connect(function()
+	local value = clampNumber(fastSpeedBox.Text, Config.MinFastSpeed, Config.MaxFastSpeed)
+	if value then
+		Config.FastSpeed = value
+		saveConfigValue("FastSpeed")
+	end
+	fastSpeedBox.Text = tostring(Config.FastSpeed)
+end))
+
+local antiAfkIntervalRow = createRow("AntiAFKIntervalRow", 7, settingsPage)
+
+local antiAfkIntervalLabel = Instance.new("TextLabel")
+antiAfkIntervalLabel.Name = "Label"
+antiAfkIntervalLabel.Size = UDim2.new(0.5, -12, 1, 0)
+antiAfkIntervalLabel.Position = UDim2.fromOffset(12, 0)
+antiAfkIntervalLabel.BackgroundTransparency = 1
+antiAfkIntervalLabel.Text = "AntiAFK sec"
+antiAfkIntervalLabel.Font = Enum.Font.GothamMedium
+antiAfkIntervalLabel.TextSize = 14
+antiAfkIntervalLabel.TextColor3 = Theme.Text
+antiAfkIntervalLabel.TextXAlignment = Enum.TextXAlignment.Left
+antiAfkIntervalLabel.Parent = antiAfkIntervalRow
+
+local antiAfkIntervalBox = Instance.new("TextBox")
+antiAfkIntervalBox.Name = "IntervalBox"
+antiAfkIntervalBox.Size = UDim2.fromOffset(82, 30)
+antiAfkIntervalBox.Position = UDim2.new(1, -94, 0.5, -15)
+antiAfkIntervalBox.BackgroundColor3 = Theme.PanelSoft
+antiAfkIntervalBox.BorderSizePixel = 0
+antiAfkIntervalBox.Font = Enum.Font.GothamMedium
+antiAfkIntervalBox.TextSize = 14
+antiAfkIntervalBox.TextColor3 = Theme.Text
+antiAfkIntervalBox.PlaceholderColor3 = Theme.Muted
+antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
+antiAfkIntervalBox.PlaceholderText = "Seconds"
+antiAfkIntervalBox.ClearTextOnFocus = false
+antiAfkIntervalBox.Parent = antiAfkIntervalRow
+addCorner(antiAfkIntervalBox, 6)
+
+track(antiAfkIntervalBox.FocusLost:Connect(function()
+	local value = clampNumber(antiAfkIntervalBox.Text, Config.MinAntiAFKInterval, Config.MaxAntiAFKInterval)
+	if value then
+		Config.AntiAFKInterval = value
+		saveConfigValue("AntiAFKInterval")
+	end
+	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
+end))
+
+local resetRow = createRow("ResetSettingsRow", 8, settingsPage)
+
+local resetLabel = Instance.new("TextLabel")
+resetLabel.Name = "Label"
+resetLabel.Size = UDim2.new(1, -100, 1, 0)
+resetLabel.Position = UDim2.fromOffset(12, 0)
+resetLabel.BackgroundTransparency = 1
+resetLabel.Text = "Reset settings"
+resetLabel.Font = Enum.Font.GothamMedium
+resetLabel.TextSize = 14
+resetLabel.TextColor3 = Theme.Text
+resetLabel.TextXAlignment = Enum.TextXAlignment.Left
+resetLabel.Parent = resetRow
+
+local resetButton = Instance.new("TextButton")
+resetButton.Name = "Reset"
+resetButton.Size = UDim2.fromOffset(82, 30)
+resetButton.Position = UDim2.new(1, -94, 0.5, -15)
+resetButton.BackgroundColor3 = Theme.Danger
+resetButton.BorderSizePixel = 0
+resetButton.Font = Enum.Font.GothamBold
+resetButton.TextSize = 13
+resetButton.TextColor3 = Theme.Text
+resetButton.AutoButtonColor = true
+resetButton.Text = "Reset"
+resetButton.Parent = resetRow
+addCorner(resetButton, 6)
+
+local resetSettings = nil
+
+track(resetButton.MouseButton1Click:Connect(function()
+	if resetSettings then
+		resetSettings()
+	end
+end))
+
 updateHotkeyBindings()
 updateCanvasSize()
+
+updateMiniStatus = function()
+	local active = {}
+	if flyControl.isEnabled() then
+		table.insert(active, "F")
+	end
+	if antiAfkControl.isEnabled() then
+		table.insert(active, "A")
+	end
+	if noClipControl.isEnabled() then
+		table.insert(active, "N")
+	end
+	if clickerControl.isEnabled() then
+		table.insert(active, "C")
+	end
+	miniStatus.Text = table.concat(active, " ")
+end
+updateMiniStatus()
 
 local function setContentVisible(visible)
 	topBar.Visible = visible
@@ -1081,6 +1394,7 @@ local function collapseGui()
 	collapsed = true
 	animatingCollapse = true
 	sessionState.Collapsed = true
+	queueSaveSettings()
 	expandedPosition = clampOffsetPosition(frame.Position, expandedSize)
 	savePosition("ExpandedPosition", expandedPosition)
 	local targetPosition = clampOffsetPosition(expandedPosition, collapsedSize)
@@ -1106,6 +1420,7 @@ local function expandGui()
 	collapsed = false
 	animatingCollapse = true
 	sessionState.Collapsed = false
+	queueSaveSettings()
 	frame.Position = miniButton.Position
 	frame.Size = collapsedSize
 	frame.Visible = true
@@ -1122,6 +1437,46 @@ local function expandGui()
 		setContentVisible(true)
 		animatingCollapse = false
 	end)
+end
+
+resetSettings = function()
+	Config.FlySpeed = 50
+	Config.FastSpeed = 120
+	Config.Hotkey = Enum.KeyCode.F
+	Config.AntiAFKHotkey = Enum.KeyCode.G
+	Config.NoClipHotkey = Enum.KeyCode.N
+	Config.ClickerHotkey = Enum.KeyCode.C
+	Config.GuiHotkey = Enum.KeyCode.RightShift
+	Config.AntiAFKInterval = 120
+	Config.ClickInterval = 0.1
+	Config.ClickButton = "Left"
+	sessionState.Hotkeys = {}
+	sessionState.Settings = {}
+	sessionState.Collapsed = false
+	sessionState.ExpandedPosition = nil
+	sessionState.CollapsedPosition = nil
+	collapsed = false
+	animatingCollapse = false
+	expandedSize = getExpandedSize()
+	collapsedSize = getCollapsedSize()
+	expandedPosition = clampOffsetPosition(defaultExpandedPosition(), expandedSize)
+	collapsedPosition = expandedPosition
+	frame.Size = expandedSize
+	frame.Position = expandedPosition
+	frame.Visible = true
+	miniButton.Size = collapsedSize
+	miniButton.Position = collapsedPosition
+	miniButton.Visible = false
+	setContentVisible(true)
+	speedBox.Text = tostring(Config.FlySpeed)
+	fastSpeedBox.Text = tostring(Config.FastSpeed)
+	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
+	clickDelayBox.Text = tostring(Config.ClickInterval)
+	clickModeButton.Text = Config.ClickButton
+	updateHotkeyBindings()
+	updateMiniStatus()
+	queueSaveSettings()
+	saveSettingsNow()
 end
 
 local function makeDraggable(handle, target, sizeGetter, moved)
@@ -1220,6 +1575,7 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 		if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
 			Config[bindingHotkey.configKey] = input.KeyCode
 			sessionState.Hotkeys[bindingHotkey.configKey] = input.KeyCode.Name
+			queueSaveSettings()
 			bindingHotkey = nil
 			updateHotkeyBindings()
 		end
@@ -1238,6 +1594,12 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 		noClipControl.toggle()
 	elseif input.KeyCode == Config.ClickerHotkey then
 		clickerControl.toggle()
+	elseif input.KeyCode == Config.GuiHotkey then
+		if collapsed then
+			expandGui()
+		else
+			collapseGui()
+		end
 	end
 end))
 
@@ -1250,6 +1612,7 @@ track(LocalPlayer.CharacterAdded:Connect(function()
 	NoClip.stop()
 	flyControl.setState(false)
 	noClipControl.setState(false)
+	updateMiniStatus()
 end))
 
 track(screenGui.Destroying:Connect(function()
@@ -1259,6 +1622,7 @@ track(screenGui.Destroying:Connect(function()
 
 	destroyed = true
 	sessionState.Collapsed = collapsed
+	queueSaveSettings()
 	if collapsed then
 		savePosition("CollapsedPosition", miniButton.Position)
 	else
@@ -1274,5 +1638,6 @@ track(screenGui.Destroying:Connect(function()
 		disconnect(connection)
 	end
 
+	saveSettingsNow()
 	table.clear(uiConnections)
 end))
