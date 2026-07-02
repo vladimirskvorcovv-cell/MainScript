@@ -23,6 +23,7 @@ local Config = {
 	AntiAFKHotkey = Enum.KeyCode.G,
 	NoClipHotkey = Enum.KeyCode.N,
 	ClickerHotkey = Enum.KeyCode.C,
+	ESPHotkey = Enum.KeyCode.V,
 	GuiHotkey = Enum.KeyCode.RightShift,
 	AntiAFKInterval = 120,
 	MinAntiAFKInterval = 10,
@@ -674,7 +675,7 @@ local function queueSaveSettings()
 	end)
 end
 
-for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "GuiHotkey" }) do
+for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "ESPHotkey", "GuiHotkey" }) do
 	local keyName = sessionState.Hotkeys[configKey]
 	if type(keyName) == "string" and Enum.KeyCode[keyName] then
 		Config[configKey] = Enum.KeyCode[keyName]
@@ -1564,7 +1565,8 @@ createHotkeyRow("Fly", 1, "Hotkey", settingsPage)
 createHotkeyRow("AntiAFK", 2, "AntiAFKHotkey", settingsPage)
 createHotkeyRow("NoClip", 3, "NoClipHotkey", settingsPage)
 createHotkeyRow("Clicker", 4, "ClickerHotkey", settingsPage)
-createHotkeyRow("GUI", 5, "GuiHotkey", settingsPage)
+createHotkeyRow("ESP", 5, "ESPHotkey", settingsPage)
+createHotkeyRow("GUI", 6, "GuiHotkey", settingsPage)
 
 local fastSpeedRow = createRow("FastFlySpeedRow", 6, settingsPage)
 
@@ -1778,6 +1780,7 @@ resetSettings = function()
 	Config.AntiAFKHotkey = Enum.KeyCode.G
 	Config.NoClipHotkey = Enum.KeyCode.N
 	Config.ClickerHotkey = Enum.KeyCode.C
+	Config.ESPHotkey = Enum.KeyCode.V
 	Config.GuiHotkey = Enum.KeyCode.RightShift
 	Config.AntiAFKInterval = 120
 	Config.ClickInterval = 0.1
@@ -1939,6 +1942,8 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 		noClipControl.toggle()
 	elseif input.KeyCode == Config.ClickerHotkey then
 		clickerControl.toggle()
+	elseif input.KeyCode == Config.ESPHotkey then
+		espControl.toggle()
 	elseif input.KeyCode == Config.GuiHotkey then
 		if collapsed then
 			expandGui()
