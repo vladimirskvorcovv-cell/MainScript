@@ -4,8 +4,10 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
-local VirtualUser = game:GetService("VirtualUser")
 local TweenService = game:GetService("TweenService")
+local VirtualInputManager = select(2, pcall(function()
+	return game:GetService("VirtualInputManager")
+end))
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -16,6 +18,11 @@ local Config = {
 	MaxSpeed = 300,
 	FlySmooth = 10,
 	Hotkey = Enum.KeyCode.F,
+	AntiAFKInterval = 120,
+	KeyTapTime = 0.08,
+	ClickInterval = 0.1,
+	MinClickInterval = 0.03,
+	MaxClickInterval = 10,
 }
 
 local Theme = {
@@ -62,6 +69,49 @@ local function destroy(instance)
 	if instance then
 		instance:Destroy()
 	end
+end
+
+local random = Random.new()
+local antiAfkKeys = {
+	Enum.KeyCode.W,
+	Enum.KeyCode.A,
+	Enum.KeyCode.S,
+	Enum.KeyCode.D,
+}
+
+local function hasVirtualInput()
+	return typeof(VirtualInputManager) == "Instance"
+end
+
+local function tapKey(keyCode, holdTime)
+	if not hasVirtualInput() then
+		return false, "VirtualInputManager is unavailable"
+	end
+	local ok, err = pcall(function()
+		VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+		task.wait(holdTime or Config.KeyTapTime)
+		VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+	end)
+	if not ok then
+		return false, err
+	end
+	return true
+end
+
+local function clickMouse()
+	if not hasVirtualInput() then
+		return false, "VirtualInputManager is unavailable"
+	end
+	local ok, err = pcall(function()
+		local position = UserInputService:GetMouseLocation()
+		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
+		task.wait(0.015)
+		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
+	end)
+	if not ok then
+		return false, err
+	end
+	return true
 end
 
 local Fly = {
@@ -252,25 +302,104 @@ end
 
 local AntiAFK = {
 	Enabled = false,
-	_conn = nil,
+	_token = 0,
 }
 
-function AntiAFK.toggle(state)
-	AntiAFK.Enabled = state
+function AntiAFK.pressRandomKey()
+	local keyCode = antiAfkKeys[random:NextInteger(1, #antiAfkKeys)]
+	return tapKey(keyCode, Config.KeyTapTime)
+end
 
-	if state then
-		if not AntiAFK._conn then
-			AntiAFK._conn = LocalPlayer.Idled:Connect(function()
-				VirtualUser:CaptureController()
-				VirtualUser:ClickButton2(Vector2.zero)
-			end)
-		end
-	else
-		disconnect(AntiAFK._conn)
-		AntiAFK._conn = nil
+function AntiAFK.start()
+	if AntiAFK.Enabled then
+		return true
+	end
+	if not hasVirtualInput() then
+		return false, "VirtualInputManager is unavailable"
 	end
 
+	AntiAFK.Enabled = true
+	AntiAFK._token += 1
+	local token = AntiAFK._token
+
+	task.spawn(function()
+		while AntiAFK.Enabled and AntiAFK._token == token do
+			local ok = AntiAFK.pressRandomKey()
+			if not ok then
+				AntiAFK.stop()
+				break
+			end
+			local elapsed = 0
+			while elapsed < Config.AntiAFKInterval and AntiAFK.Enabled and AntiAFK._token == token do
+				elapsed += task.wait(1)
+			end
+		end
+	end)
+
 	return true
+end
+
+function AntiAFK.stop()
+	if not AntiAFK.Enabled then
+		return true
+	end
+	AntiAFK.Enabled = false
+	AntiAFK._token += 1
+	return true
+end
+
+function AntiAFK.toggle(state)
+	if state then
+		return AntiAFK.start()
+	end
+	return AntiAFK.stop()
+end
+
+local Clicker = {
+	Enabled = false,
+	_token = 0,
+}
+
+function Clicker.start()
+	if Clicker.Enabled then
+		return true
+	end
+	if not hasVirtualInput() then
+		return false, "VirtualInputManager is unavailable"
+	end
+
+	Clicker.Enabled = true
+	Clicker._token += 1
+	local token = Clicker._token
+
+	task.spawn(function()
+		while Clicker.Enabled and Clicker._token == token do
+			local ok = clickMouse()
+			if not ok then
+				Clicker.stop()
+				break
+			end
+			task.wait(Config.ClickInterval)
+		end
+	end)
+
+	return true
+end
+
+function Clicker.stop()
+	if not Clicker.Enabled then
+		return true
+	end
+	Clicker.Enabled = false
+	Clicker._token += 1
+	return true
+end
+
+function Clicker.toggle(state)
+	if state then
+		return Clicker.start()
+	end
+	return Clicker.stop()
 end
 
 local NoClip = {
@@ -371,6 +500,10 @@ function NoClip.toggle(state)
 	return NoClip.stop()
 end
 
+local storage = (getgenv and getgenv()) or _G
+storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
+local sessionState = storage.FlyAntiAFK_State
+
 local guiParent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
 local existing = guiParent:FindFirstChild("FlyAntiAFK_GUI")
 if existing then
@@ -415,6 +548,10 @@ local function tween(instance, duration, props)
 	return activeTween
 end
 
+local isTouchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local screenPadding = isTouchOnly and 10 or 8
+local rowHeight = isTouchOnly and 50 or 44
+
 local function getViewportSize()
 	local camera = Workspace.CurrentCamera
 	if camera then
@@ -423,23 +560,60 @@ local function getViewportSize()
 	return Vector2.new(1280, 720)
 end
 
+local function getExpandedSize()
+	local viewport = getViewportSize()
+	local widthLimit = math.max(160, viewport.X - screenPadding * 2)
+	local heightLimit = math.max(180, viewport.Y - screenPadding * 2)
+	local preferredWidth = isTouchOnly and 330 or 306
+	local preferredHeight = isTouchOnly and math.max(320, math.floor(viewport.Y * 0.64)) or 360
+	return UDim2.fromOffset(math.min(preferredWidth, widthLimit), math.min(preferredHeight, heightLimit))
+end
+
+local function getCollapsedSize()
+	return isTouchOnly and UDim2.fromOffset(62, 50) or UDim2.fromOffset(52, 42)
+end
+
 local function clampOffsetPosition(position, size)
 	local viewport = getViewportSize()
-	local x = math.clamp(position.X.Offset, 0, math.max(0, viewport.X - size.X.Offset))
-	local y = math.clamp(position.Y.Offset, 0, math.max(0, viewport.Y - size.Y.Offset))
+	local maxX = math.max(screenPadding, viewport.X - size.X.Offset - screenPadding)
+	local maxY = math.max(screenPadding, viewport.Y - size.Y.Offset - screenPadding)
+	local x = math.clamp(position.X.Offset, screenPadding, maxX)
+	local y = math.clamp(position.Y.Offset, screenPadding, maxY)
 	return UDim2.fromOffset(x, y)
 end
 
-local expandedSize = UDim2.fromOffset(286, 318)
-local collapsedSize = UDim2.fromOffset(52, 42)
-local expandedPosition = UDim2.fromOffset(20, math.max(20, math.floor(getViewportSize().Y * 0.5 - 159)))
-local collapsed = false
+local function savePosition(key, position)
+	sessionState[key] = {
+		X = math.floor(position.X.Offset),
+		Y = math.floor(position.Y.Offset),
+	}
+end
+
+local function loadPosition(key, fallback)
+	local saved = sessionState[key]
+	if typeof(saved) == "table" and type(saved.X) == "number" and type(saved.Y) == "number" then
+		return UDim2.fromOffset(saved.X, saved.Y)
+	end
+	return fallback
+end
+
+local function defaultExpandedPosition()
+	local size = getExpandedSize()
+	return UDim2.fromOffset(screenPadding + 12, math.max(screenPadding, math.floor(getViewportSize().Y * 0.5 - size.Y.Offset * 0.5)))
+end
+
+local expandedSize = getExpandedSize()
+local collapsedSize = getCollapsedSize()
+local expandedPosition = loadPosition("ExpandedPosition", defaultExpandedPosition())
+local collapsedPosition = loadPosition("CollapsedPosition", expandedPosition)
+local collapsed = sessionState.Collapsed == true
 local animatingCollapse = false
 
 local frame = Instance.new("Frame")
 frame.Name = "Main"
 frame.Size = expandedSize
 frame.Position = clampOffsetPosition(expandedPosition, expandedSize)
+frame.Visible = not collapsed
 frame.BackgroundColor3 = Theme.Window
 frame.BorderSizePixel = 0
 frame.Active = true
@@ -501,64 +675,107 @@ tabBar.Size = UDim2.new(1, 0, 0, 34)
 tabBar.BackgroundTransparency = 1
 tabBar.Parent = content
 
-local mainTab = Instance.new("TextButton")
-mainTab.Name = "MainTab"
-mainTab.Size = UDim2.fromOffset(86, 30)
-mainTab.Position = UDim2.fromOffset(0, 2)
-mainTab.BackgroundColor3 = Theme.AccentDark
-mainTab.BorderSizePixel = 0
-mainTab.Text = "Main"
-mainTab.Font = Enum.Font.GothamBold
-mainTab.TextSize = 14
-mainTab.TextColor3 = Theme.Text
-mainTab.AutoButtonColor = false
-mainTab.Parent = tabBar
-addCorner(mainTab, 6)
+local function createTab(name, text, xOffset)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = UDim2.fromOffset(86, 30)
+	button.Position = UDim2.fromOffset(xOffset, 2)
+	button.BackgroundColor3 = Theme.Button
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 14
+	button.TextColor3 = Theme.Text
+	button.AutoButtonColor = false
+	button.Parent = tabBar
+	addCorner(button, 6)
+	return button
+end
 
-local page = Instance.new("Frame")
-page.Name = "MainPage"
-page.Size = UDim2.new(1, 0, 1, -40)
-page.Position = UDim2.fromOffset(0, 40)
-page.BackgroundTransparency = 1
-page.Parent = content
+local mainTab = createTab("MainTab", "Main", 0)
+local clickerTab = createTab("ClickerTab", "Clicker", 94)
 
-local pageLayout = Instance.new("UIListLayout")
-pageLayout.FillDirection = Enum.FillDirection.Vertical
-pageLayout.Padding = UDim.new(0, 8)
-pageLayout.SortOrder = Enum.SortOrder.LayoutOrder
-pageLayout.Parent = page
+local function createPage(name)
+	local scrollingPage = Instance.new("ScrollingFrame")
+	scrollingPage.Name = name
+	scrollingPage.Size = UDim2.new(1, 0, 1, -40)
+	scrollingPage.Position = UDim2.fromOffset(0, 40)
+	scrollingPage.BackgroundTransparency = 1
+	scrollingPage.BorderSizePixel = 0
+	scrollingPage.Active = true
+	scrollingPage.ScrollBarThickness = isTouchOnly and 4 or 6
+	scrollingPage.ScrollingDirection = Enum.ScrollingDirection.Y
+	scrollingPage.CanvasSize = UDim2.fromOffset(0, 0)
+	scrollingPage.CanvasPosition = Vector2.zero
+	scrollingPage.Parent = content
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = scrollingPage
+
+	return scrollingPage, layout
+end
+
+local page, pageLayout = createPage("MainPage")
+local clickerPage, clickerPageLayout = createPage("ClickerPage")
+clickerPage.Visible = false
+
+local function updateCanvasSize()
+	page.CanvasSize = UDim2.fromOffset(0, pageLayout.AbsoluteContentSize.Y + 8)
+	clickerPage.CanvasSize = UDim2.fromOffset(0, clickerPageLayout.AbsoluteContentSize.Y + 8)
+end
+
+local function selectTab(name)
+	local mainActive = name == "Main"
+	page.Visible = mainActive
+	clickerPage.Visible = not mainActive
+	mainTab.BackgroundColor3 = mainActive and Theme.AccentDark or Theme.Button
+	clickerTab.BackgroundColor3 = mainActive and Theme.Button or Theme.AccentDark
+end
+
+track(pageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvasSize))
+track(clickerPageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvasSize))
+track(mainTab.MouseButton1Click:Connect(function()
+	selectTab("Main")
+end))
+track(clickerTab.MouseButton1Click:Connect(function()
+	selectTab("Clicker")
+end))
+selectTab("Main")
 
 local miniButton = Instance.new("TextButton")
 miniButton.Name = "OpenButton"
 miniButton.Size = collapsedSize
-miniButton.Position = frame.Position
+miniButton.Position = collapsed and clampOffsetPosition(collapsedPosition, collapsedSize) or frame.Position
 miniButton.BackgroundColor3 = Theme.AccentDark
 miniButton.BorderSizePixel = 0
 miniButton.Text = "FA"
 miniButton.Font = Enum.Font.GothamBold
 miniButton.TextSize = 15
 miniButton.TextColor3 = Theme.Text
-miniButton.Visible = false
+miniButton.Visible = collapsed
 miniButton.Active = true
 miniButton.Parent = screenGui
 addCorner(miniButton, 8)
 addStroke(miniButton, Theme.Stroke, 0.2)
 
-local function createRow(name, order)
+local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
-	row.Size = UDim2.new(1, 0, 0, 44)
+	row.Size = UDim2.new(1, -2, 0, rowHeight)
 	row.BackgroundColor3 = Theme.Panel
 	row.BorderSizePixel = 0
 	row.LayoutOrder = order
-	row.Parent = page
+	row.Parent = parentPage or page
 	addCorner(row, 7)
 	addStroke(row, Theme.Stroke, 0.45)
 	return row
 end
 
-local function createSwitch(text, order, onChanged)
-	local row = createRow(text .. "Row", order)
+local function createSwitch(text, order, onChanged, parentPage)
+	local row = createRow(text .. "Row", order, parentPage)
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Label"
@@ -572,25 +789,27 @@ local function createSwitch(text, order, onChanged)
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.Parent = row
 
-	local switch = Instance.new("TextButton")
+	local switchWidth = isTouchOnly and 56 or 50
+	local switchHeight = isTouchOnly and 30 or 26
+	local knobSize = switchHeight - 6
+
+	local switch = Instance.new("Frame")
 	switch.Name = "Switch"
-	switch.Size = UDim2.fromOffset(50, 26)
-	switch.Position = UDim2.new(1, -62, 0.5, -13)
+	switch.Size = UDim2.fromOffset(switchWidth, switchHeight)
+	switch.Position = UDim2.new(1, -(switchWidth + 12), 0.5, -math.floor(switchHeight * 0.5))
 	switch.BackgroundColor3 = Theme.Off
 	switch.BorderSizePixel = 0
-	switch.Text = ""
-	switch.AutoButtonColor = false
 	switch.Parent = row
-	addCorner(switch, 13)
+	addCorner(switch, math.floor(switchHeight * 0.5))
 
 	local knob = Instance.new("Frame")
 	knob.Name = "Knob"
-	knob.Size = UDim2.fromOffset(20, 20)
+	knob.Size = UDim2.fromOffset(knobSize, knobSize)
 	knob.Position = UDim2.fromOffset(3, 3)
 	knob.BackgroundColor3 = Theme.Text
 	knob.BorderSizePixel = 0
 	knob.Parent = switch
-	addCorner(knob, 10)
+	addCorner(knob, math.floor(knobSize * 0.5))
 
 	local enabled = false
 	local busy = false
@@ -599,7 +818,7 @@ local function createSwitch(text, order, onChanged)
 
 	local function render(animated)
 		local color = enabled and Theme.Accent or Theme.Off
-		local knobPosition = enabled and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3)
+		local knobPosition = enabled and UDim2.fromOffset(switchWidth - knobSize - 3, 3) or UDim2.fromOffset(3, 3)
 
 		if animated then
 			tween(switch, 0.16, { BackgroundColor3 = color })
@@ -647,14 +866,26 @@ local function createSwitch(text, order, onChanged)
 		return enabled
 	end
 
+	local pressPosition = nil
+
 	track(row.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			control.toggle()
+			pressPosition = input.Position
 		end
 	end))
 
-	track(switch.MouseButton1Click:Connect(function()
-		control.toggle()
+	track(row.InputEnded:Connect(function(input)
+		if not pressPosition then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		local moved = (input.Position - pressPosition).Magnitude
+		pressPosition = nil
+		if moved <= 10 then
+			control.toggle()
+		end
 	end))
 
 	render(false)
@@ -704,6 +935,46 @@ track(speedBox.FocusLost:Connect(function()
 	speedBox.Text = tostring(Config.FlySpeed)
 end))
 
+local clickerControl = createSwitch("Auto clicker", 1, Clicker.toggle, clickerPage)
+
+local clickDelayRow = createRow("ClickDelayRow", 2, clickerPage)
+
+local clickDelayLabel = Instance.new("TextLabel")
+clickDelayLabel.Name = "Label"
+clickDelayLabel.Size = UDim2.new(0.5, -12, 1, 0)
+clickDelayLabel.Position = UDim2.fromOffset(12, 0)
+clickDelayLabel.BackgroundTransparency = 1
+clickDelayLabel.Text = "Click delay"
+clickDelayLabel.Font = Enum.Font.GothamMedium
+clickDelayLabel.TextSize = 14
+clickDelayLabel.TextColor3 = Theme.Text
+clickDelayLabel.TextXAlignment = Enum.TextXAlignment.Left
+clickDelayLabel.Parent = clickDelayRow
+
+local clickDelayBox = Instance.new("TextBox")
+clickDelayBox.Name = "DelayBox"
+clickDelayBox.Size = UDim2.fromOffset(82, 30)
+clickDelayBox.Position = UDim2.new(1, -94, 0.5, -15)
+clickDelayBox.BackgroundColor3 = Theme.PanelSoft
+clickDelayBox.BorderSizePixel = 0
+clickDelayBox.Font = Enum.Font.GothamMedium
+clickDelayBox.TextSize = 14
+clickDelayBox.TextColor3 = Theme.Text
+clickDelayBox.PlaceholderColor3 = Theme.Muted
+clickDelayBox.Text = tostring(Config.ClickInterval)
+clickDelayBox.PlaceholderText = "Delay"
+clickDelayBox.ClearTextOnFocus = false
+clickDelayBox.Parent = clickDelayRow
+addCorner(clickDelayBox, 6)
+
+track(clickDelayBox.FocusLost:Connect(function()
+	local value = clampNumber(clickDelayBox.Text, Config.MinClickInterval, Config.MaxClickInterval)
+	if value then
+		Config.ClickInterval = value
+	end
+	clickDelayBox.Text = tostring(Config.ClickInterval)
+end))
+
 local hotkeyRow = createRow("FlyHotkeyRow", 5)
 
 local hotkeyLabel = Instance.new("TextLabel")
@@ -744,6 +1015,7 @@ bindButton.TextColor3 = Theme.Text
 bindButton.AutoButtonColor = true
 bindButton.Parent = hotkeyRow
 addCorner(bindButton, 6)
+updateCanvasSize()
 
 local bindingHotkey = false
 
@@ -764,7 +1036,9 @@ local function setContentVisible(visible)
 end
 
 local function setMiniPosition(position)
-	miniButton.Position = clampOffsetPosition(position, collapsedSize)
+	collapsedPosition = clampOffsetPosition(position, collapsedSize)
+	miniButton.Position = collapsedPosition
+	savePosition("CollapsedPosition", collapsedPosition)
 end
 
 local function collapseGui()
@@ -774,7 +1048,9 @@ local function collapseGui()
 
 	collapsed = true
 	animatingCollapse = true
+	sessionState.Collapsed = true
 	expandedPosition = clampOffsetPosition(frame.Position, expandedSize)
+	savePosition("ExpandedPosition", expandedPosition)
 	local targetPosition = clampOffsetPosition(expandedPosition, collapsedSize)
 	setMiniPosition(targetPosition)
 	setContentVisible(false)
@@ -797,12 +1073,14 @@ local function expandGui()
 
 	collapsed = false
 	animatingCollapse = true
+	sessionState.Collapsed = false
 	frame.Position = miniButton.Position
 	frame.Size = collapsedSize
 	frame.Visible = true
 	miniButton.Visible = false
 	local targetPosition = clampOffsetPosition(miniButton.Position, expandedSize)
 	expandedPosition = targetPosition
+	savePosition("ExpandedPosition", expandedPosition)
 	local activeTween = tween(frame, 0.24, { Position = targetPosition, Size = expandedSize })
 
 	activeTween.Completed:Connect(function()
@@ -860,14 +1138,48 @@ makeDraggable(topBar, frame, function()
 	return expandedSize
 end, function(position)
 	expandedPosition = position
+	savePosition("ExpandedPosition", expandedPosition)
 end)
 
 makeDraggable(miniButton, miniButton, function()
 	return collapsedSize
 end, function(position)
-	expandedPosition = position
+	collapsedPosition = position
+	savePosition("CollapsedPosition", collapsedPosition)
 end)
 
+local cameraViewportConnection = nil
+
+local function refreshGuiBounds()
+	expandedSize = getExpandedSize()
+	collapsedSize = getCollapsedSize()
+	miniButton.Size = collapsedSize
+	updateCanvasSize()
+
+	if collapsed then
+		setMiniPosition(miniButton.Position)
+	else
+		expandedPosition = clampOffsetPosition(frame.Position, expandedSize)
+		frame.Size = expandedSize
+		frame.Position = expandedPosition
+		savePosition("ExpandedPosition", expandedPosition)
+	end
+end
+
+local function bindViewportWatcher()
+	disconnect(cameraViewportConnection)
+	cameraViewportConnection = nil
+	local camera = Workspace.CurrentCamera
+	if camera then
+		cameraViewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(refreshGuiBounds)
+	end
+end
+
+bindViewportWatcher()
+track(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	bindViewportWatcher()
+	refreshGuiBounds()
+end))
 track(minimizeButton.MouseButton1Click:Connect(collapseGui))
 track(miniButton.MouseButton1Click:Connect(expandGui))
 
@@ -907,9 +1219,17 @@ track(screenGui.Destroying:Connect(function()
 	end
 
 	destroyed = true
+	sessionState.Collapsed = collapsed
+	if collapsed then
+		savePosition("CollapsedPosition", miniButton.Position)
+	else
+		savePosition("ExpandedPosition", frame.Position)
+	end
 	Fly.stop()
 	NoClip.stop()
 	AntiAFK.toggle(false)
+	Clicker.stop()
+	disconnect(cameraViewportConnection)
 
 	for _, connection in ipairs(uiConnections) do
 		disconnect(connection)
