@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local VirtualInputManager = select(2, pcall(function()
@@ -33,6 +34,9 @@ local Config = {
 	MinFastSpeed = 1,
 	MaxFastSpeed = 600,
 	ClickButton = "Left",
+	ClickTargetEnabled = false,
+	ClickTargetX = nil,
+	ClickTargetY = nil,
 }
 
 local Theme = {
@@ -114,6 +118,9 @@ local function clickMouse()
 	end
 	local ok, err = pcall(function()
 		local position = UserInputService:GetMouseLocation()
+		if Config.ClickTargetEnabled and type(Config.ClickTargetX) == "number" and type(Config.ClickTargetY) == "number" then
+			position = Vector2.new(Config.ClickTargetX, Config.ClickTargetY)
+		end
 		local buttonIndex = Config.ClickButton == "Right" and 1 or 0
 		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, buttonIndex, true, game, 0)
 		task.wait(0.015)
@@ -511,6 +518,78 @@ function NoClip.toggle(state)
 	return NoClip.stop()
 end
 
+local Invisibility = {
+	Enabled = false,
+	_remote = nil,
+	_checked = false,
+}
+
+local invisibilityKeywords = {
+	"invis",
+	"invisible",
+	"invisibility",
+	"cloak",
+	"stealth",
+	"vanish",
+	"ghost",
+}
+
+local function findInvisibilityRemote()
+	if Invisibility._checked and Invisibility._remote and Invisibility._remote.Parent then
+		return Invisibility._remote
+	end
+
+	Invisibility._checked = true
+	Invisibility._remote = nil
+
+	local roots = { ReplicatedStorage, Workspace }
+	for _, root in ipairs(roots) do
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") then
+				local name = string.lower(descendant.Name)
+				for _, keyword in ipairs(invisibilityKeywords) do
+					if string.find(name, keyword, 1, true) then
+						Invisibility._remote = descendant
+						return descendant
+					end
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+function Invisibility.isSupported()
+	return findInvisibilityRemote() ~= nil
+end
+
+function Invisibility.apply(state)
+	local remote = findInvisibilityRemote()
+	if not remote then
+		return false, "No server invisibility remote found"
+	end
+
+	local ok, err = pcall(function()
+		if remote:IsA("RemoteEvent") then
+			remote:FireServer(state)
+		else
+			remote:InvokeServer(state)
+		end
+	end)
+
+	if not ok then
+		return false, err
+	end
+
+	Invisibility.Enabled = state == true
+	return true
+end
+
+function Invisibility.toggle(state)
+	return Invisibility.apply(state)
+end
+
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
 local sessionState = storage.FlyAntiAFK_State
@@ -618,6 +697,19 @@ if sessionState.Settings.ClickButton == "Right" then
 	Config.ClickButton = "Right"
 else
 	Config.ClickButton = "Left"
+end
+
+if type(sessionState.Settings.ClickTargetEnabled) == "boolean" then
+	Config.ClickTargetEnabled = sessionState.Settings.ClickTargetEnabled
+end
+
+if type(sessionState.Settings.ClickTarget) == "table" then
+	local x = tonumber(sessionState.Settings.ClickTarget.X)
+	local y = tonumber(sessionState.Settings.ClickTarget.Y)
+	if x and y then
+		Config.ClickTargetX = x
+		Config.ClickTargetY = y
+	end
 end
 
 local function saveConfigValue(configKey)
@@ -907,6 +999,59 @@ miniStatus.TextColor3 = Theme.Text
 miniStatus.TextXAlignment = Enum.TextXAlignment.Center
 miniStatus.Parent = miniButton
 
+local clickTargetSize = UDim2.fromOffset(36, 36)
+
+local function getDefaultClickTargetPosition()
+	local viewport = getViewportSize()
+	return UDim2.fromOffset(math.floor(viewport.X * 0.5 - clickTargetSize.X.Offset * 0.5), math.floor(viewport.Y * 0.5 - clickTargetSize.Y.Offset * 0.5))
+end
+
+local function getClickTargetPosition()
+	if type(Config.ClickTargetX) == "number" and type(Config.ClickTargetY) == "number" then
+		return clampOffsetPosition(UDim2.fromOffset(Config.ClickTargetX - clickTargetSize.X.Offset * 0.5, Config.ClickTargetY - clickTargetSize.Y.Offset * 0.5), clickTargetSize)
+	end
+	return clampOffsetPosition(getDefaultClickTargetPosition(), clickTargetSize)
+end
+
+local function saveClickTargetPosition(position)
+	local clamped = clampOffsetPosition(position, clickTargetSize)
+	Config.ClickTargetX = math.floor(clamped.X.Offset + clickTargetSize.X.Offset * 0.5)
+	Config.ClickTargetY = math.floor(clamped.Y.Offset + clickTargetSize.Y.Offset * 0.5)
+	sessionState.Settings.ClickTarget = {
+		X = Config.ClickTargetX,
+		Y = Config.ClickTargetY,
+	}
+	queueSaveSettings()
+	return clamped
+end
+
+local clickTargetMarker = Instance.new("Frame")
+clickTargetMarker.Name = "ClickTarget"
+clickTargetMarker.Size = clickTargetSize
+clickTargetMarker.Position = getClickTargetPosition()
+clickTargetMarker.BackgroundColor3 = Theme.Accent
+clickTargetMarker.BackgroundTransparency = 0.18
+clickTargetMarker.BorderSizePixel = 0
+clickTargetMarker.Active = true
+clickTargetMarker.Visible = Config.ClickTargetEnabled
+clickTargetMarker.ZIndex = 20
+clickTargetMarker.Parent = screenGui
+addCorner(clickTargetMarker, 18)
+addStroke(clickTargetMarker, Theme.Text, 0.05)
+
+local clickTargetMark = Instance.new("TextLabel")
+clickTargetMark.Name = "Mark"
+clickTargetMark.Size = UDim2.new(1, 0, 1, 0)
+clickTargetMark.BackgroundTransparency = 1
+clickTargetMark.Text = "+"
+clickTargetMark.Font = Enum.Font.GothamBold
+clickTargetMark.TextSize = 22
+clickTargetMark.TextColor3 = Theme.Text
+clickTargetMark.ZIndex = 21
+clickTargetMark.Parent = clickTargetMarker
+
+clickTargetMarker.Position = saveClickTargetPosition(clickTargetMarker.Position)
+
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
@@ -1050,8 +1195,12 @@ end
 local flyControl = createSwitch("Fly", 1, Fly.toggle)
 local antiAfkControl = createSwitch("AntiAFK", 2, AntiAFK.toggle)
 local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
+local invisibilityControl = nil
+if Invisibility.isSupported() then
+	invisibilityControl = createSwitch("Invisibility", 4, Invisibility.toggle)
+end
 
-local speedRow = createRow("FlySpeedRow", 4)
+local speedRow = createRow("FlySpeedRow", 5)
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Name = "Label"
@@ -1163,6 +1312,42 @@ track(clickModeButton.MouseButton1Click:Connect(function()
 	Config.ClickButton = Config.ClickButton == "Left" and "Right" or "Left"
 	clickModeButton.Text = Config.ClickButton
 	saveConfigValue("ClickButton")
+end))
+
+local clickTargetRow = createRow("ClickTargetRow", 4, clickerPage)
+
+local clickTargetLabel = Instance.new("TextLabel")
+clickTargetLabel.Name = "Label"
+clickTargetLabel.Size = UDim2.new(0.5, -12, 1, 0)
+clickTargetLabel.Position = UDim2.fromOffset(12, 0)
+clickTargetLabel.BackgroundTransparency = 1
+clickTargetLabel.Text = "Click target"
+clickTargetLabel.Font = Enum.Font.GothamMedium
+clickTargetLabel.TextSize = 14
+clickTargetLabel.TextColor3 = Theme.Text
+clickTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
+clickTargetLabel.Parent = clickTargetRow
+
+local clickTargetButton = Instance.new("TextButton")
+clickTargetButton.Name = "TargetButton"
+clickTargetButton.Size = UDim2.fromOffset(82, 30)
+clickTargetButton.Position = UDim2.new(1, -94, 0.5, -15)
+clickTargetButton.BackgroundColor3 = Theme.PanelSoft
+clickTargetButton.BorderSizePixel = 0
+clickTargetButton.Font = Enum.Font.GothamBold
+clickTargetButton.TextSize = 13
+clickTargetButton.TextColor3 = Theme.Text
+clickTargetButton.AutoButtonColor = true
+clickTargetButton.Text = Config.ClickTargetEnabled and "Target" or "Mouse"
+clickTargetButton.Parent = clickTargetRow
+addCorner(clickTargetButton, 6)
+
+track(clickTargetButton.MouseButton1Click:Connect(function()
+	Config.ClickTargetEnabled = not Config.ClickTargetEnabled
+	clickTargetButton.Text = Config.ClickTargetEnabled and "Target" or "Mouse"
+	clickTargetMarker.Visible = Config.ClickTargetEnabled
+	saveClickTargetPosition(clickTargetMarker.Position)
+	saveConfigValue("ClickTargetEnabled")
 end))
 
 local bindingHotkey = nil
@@ -1371,6 +1556,9 @@ updateMiniStatus = function()
 	if clickerControl.isEnabled() then
 		table.insert(active, "C")
 	end
+	if invisibilityControl and invisibilityControl.isEnabled() then
+		table.insert(active, "I")
+	end
 	miniStatus.Text = table.concat(active, " ")
 end
 updateMiniStatus()
@@ -1450,6 +1638,9 @@ resetSettings = function()
 	Config.AntiAFKInterval = 120
 	Config.ClickInterval = 0.1
 	Config.ClickButton = "Left"
+	Config.ClickTargetEnabled = false
+	Config.ClickTargetX = nil
+	Config.ClickTargetY = nil
 	sessionState.Hotkeys = {}
 	sessionState.Settings = {}
 	sessionState.Collapsed = false
@@ -1473,6 +1664,9 @@ resetSettings = function()
 	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
 	clickDelayBox.Text = tostring(Config.ClickInterval)
 	clickModeButton.Text = Config.ClickButton
+	clickTargetButton.Text = "Mouse"
+	clickTargetMarker.Visible = false
+	clickTargetMarker.Position = saveClickTargetPosition(getDefaultClickTargetPosition())
 	updateHotkeyBindings()
 	updateMiniStatus()
 	queueSaveSettings()
@@ -1535,12 +1729,19 @@ end, function(position)
 	savePosition("CollapsedPosition", collapsedPosition)
 end)
 
+makeDraggable(clickTargetMarker, clickTargetMarker, function()
+	return clickTargetSize
+end, function(position)
+	clickTargetMarker.Position = saveClickTargetPosition(position)
+end)
+
 local cameraViewportConnection = nil
 
 local function refreshGuiBounds()
 	expandedSize = getExpandedSize()
 	collapsedSize = getCollapsedSize()
 	miniButton.Size = collapsedSize
+	clickTargetMarker.Position = saveClickTargetPosition(clickTargetMarker.Position)
 	updateCanvasSize()
 
 	if collapsed then
@@ -1632,6 +1833,9 @@ track(screenGui.Destroying:Connect(function()
 	NoClip.stop()
 	AntiAFK.toggle(false)
 	Clicker.stop()
+	if invisibilityControl then
+		Invisibility.toggle(false)
+	end
 	disconnect(cameraViewportConnection)
 
 	for _, connection in ipairs(uiConnections) do
