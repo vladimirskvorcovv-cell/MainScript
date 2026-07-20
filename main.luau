@@ -609,6 +609,22 @@ local Aimbot = {
 	Enabled = false,
 }
 
+local function isVisible(targetPart)
+	local character = getCharacter()
+	if not character then
+		return false
+	end
+	local origin = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+	if not origin then
+		return false
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Blacklist
+	params.FilterDescendantsInstances = {character, targetPart.Parent}
+	local result = workspace:Raycast(origin.Position, (targetPart.Position - origin.Position), params)
+	return result == nil
+end
+
 function Aimbot.getClosestTarget()
 	local camera = Workspace.CurrentCamera
 	if not camera then
@@ -619,6 +635,15 @@ function Aimbot.getClosestTarget()
 	local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
 	local bestTarget = nil
 	local bestDist = math.huge
+
+	local character = getCharacter()
+	if not character then
+		return nil
+	end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return nil
+	end
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer then
@@ -631,11 +656,14 @@ function Aimbot.getClosestTarget()
 					if part then
 						local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
 						if onScreen then
-							local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-							if dist <= Config.FOVCircleRadius then
-								if dist < bestDist then
-									bestDist = dist
-									bestTarget = screenPos
+							local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+							if distToCenter <= Config.FOVCircleRadius then
+								if isVisible(part) then
+									local distance = (part.Position - rootPart.Position).Magnitude
+									if distance < bestDist then
+										bestDist = distance
+										bestTarget = screenPos
+									end
 								end
 							end
 						end
@@ -684,6 +712,18 @@ function Aimbot.toggle(state)
 		return Aimbot.start()
 	end
 	return Aimbot.stop()
+end
+
+function Aimbot.aimAtTarget(screenPos)
+	if not hasVirtualInput() then
+		return false
+	end
+	local x = math.floor(screenPos.X)
+	local y = math.floor(screenPos.Y)
+	pcall(function()
+		VirtualInputManager:SendMouseMoveEvent(x, y, game)
+	end)
+	return true
 end
 
 local storage = (getgenv and getgenv()) or _G
