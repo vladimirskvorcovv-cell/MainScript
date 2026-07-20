@@ -625,9 +625,26 @@ local function isVisible(targetPart)
 	return result == nil
 end
 
+local function getAimPart(model)
+	if not model or model == getCharacter() then
+		return nil
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return nil
+	end
+
+	local head = model:FindFirstChild("Head")
+	local part = head or model:FindFirstChild("HumanoidRootPart")
+	return if part and part:IsA("BasePart") then part else nil
+end
+
 function Aimbot.getClosestTarget()
 	local camera = Workspace.CurrentCamera
-	if not camera then
+	local character = getCharacter()
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not camera or not rootPart then
 		return nil
 	end
 
@@ -636,42 +653,46 @@ function Aimbot.getClosestTarget()
 	local bestTarget = nil
 	local bestScreenDistance = math.huge
 	local bestWorldDistance = math.huge
+	local checkedModels = {}
 
-	local character = getCharacter()
-	if not character then
-		return nil
-	end
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then
-		return nil
+	local function consider(model)
+		if checkedModels[model] then
+			return
+		end
+		checkedModels[model] = true
+
+		local part = getAimPart(model)
+		if not part then
+			return
+		end
+
+		local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+		if not onScreen then
+			return
+		end
+
+		local screenDistance = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+		if screenDistance > Config.FOVCircleRadius or not isVisible(part) then
+			return
+		end
+
+		local worldDistance = (part.Position - rootPart.Position).Magnitude
+		if screenDistance < bestScreenDistance or (screenDistance == bestScreenDistance and worldDistance < bestWorldDistance) then
+			bestScreenDistance = screenDistance
+			bestWorldDistance = worldDistance
+			bestTarget = part
+		end
 	end
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer then
-			local char = player.Character
-			if char then
-				local humanoid = char:FindFirstChildOfClass("Humanoid")
-				if humanoid and humanoid.Health > 0 then
-					local head = char:FindFirstChild("Head")
-					local part = head or char:FindFirstChild("HumanoidRootPart")
-					if part and part:IsA("BasePart") then
-						local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
-						if onScreen then
-							local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-							if distToCenter <= Config.FOVCircleRadius then
-								if isVisible(part) then
-									local worldDistance = (part.Position - rootPart.Position).Magnitude
-									if distToCenter < bestScreenDistance or (distToCenter == bestScreenDistance and worldDistance < bestWorldDistance) then
-										bestScreenDistance = distToCenter
-										bestWorldDistance = worldDistance
-										bestTarget = part
-									end
-								end
-							end
-						end
-					end
-				end
-			end
+			consider(player.Character)
+		end
+	end
+
+	for _, descendant in ipairs(Workspace:GetDescendants()) do
+		if descendant:IsA("Humanoid") then
+			consider(descendant.Parent)
 		end
 	end
 
