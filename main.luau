@@ -1065,10 +1065,60 @@ local ESP = {
 
 local espFillColor = Color3.fromRGB(20, 255, 90)
 local espOutlineColor = Color3.fromRGB(185, 255, 195)
+local espRedFillColor = Color3.fromRGB(255, 55, 55)
+local espRedOutlineColor = Color3.fromRGB(255, 190, 190)
+local espBlueFillColor = Color3.fromRGB(45, 135, 255)
+local espBlueOutlineColor = Color3.fromRGB(180, 215, 255)
+
+local function getESPColors(player)
+	local teamText = ""
+	if player.Team then
+		teamText = teamText .. " " .. string.lower(player.Team.Name)
+	end
+	pcall(function()
+		teamText = teamText .. " " .. string.lower(player.TeamColor.Name)
+	end)
+	pcall(function()
+		teamText = teamText .. " " .. string.lower(tostring(player.TeamColor))
+	end)
+
+	if string.find(teamText, "red", 1, true) then
+		return espRedFillColor, espRedOutlineColor
+	end
+	if string.find(teamText, "blue", 1, true) then
+		return espBlueFillColor, espBlueOutlineColor
+	end
+
+	local ok, color = pcall(function()
+		return player.TeamColor.Color
+	end)
+	if ok and color then
+		if color.R > 0.55 and color.B < 0.45 then
+			return espRedFillColor, espRedOutlineColor
+		end
+		if color.B > 0.55 and color.R < 0.45 then
+			return espBlueFillColor, espBlueOutlineColor
+		end
+	end
+
+	return espFillColor, espOutlineColor
+end
+
+local function updateESPColor(player)
+	local highlight = ESP._highlights[player]
+	if not highlight then
+		return
+	end
+
+	local fillColor, outlineColor = getESPColors(player)
+	highlight.FillColor = fillColor
+	highlight.OutlineColor = outlineColor
+end
 
 local function getEspHighlight(player)
 	local highlight = ESP._highlights[player]
 	if highlight and highlight.Parent then
+		updateESPColor(player)
 		return highlight
 	end
 
@@ -1084,6 +1134,7 @@ local function getEspHighlight(player)
 	end)
 	highlight.Parent = screenGui
 	ESP._highlights[player] = highlight
+	updateESPColor(player)
 
 	return highlight
 end
@@ -1118,6 +1169,7 @@ local function applyESPToPlayer(player)
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
 	if character and humanoid and humanoid.Health > 0 then
+		updateESPColor(player)
 		highlight.Adornee = character
 		highlight.Enabled = true
 		disconnect(ESP._humanoidConnections[player])
@@ -1138,6 +1190,12 @@ local function bindESPPlayer(player)
 	end
 
 	ESP._playerConnections[player] = {
+		player:GetPropertyChangedSignal("Team"):Connect(function()
+			updateESPColor(player)
+		end),
+		player:GetPropertyChangedSignal("TeamColor"):Connect(function()
+			updateESPColor(player)
+		end),
 		player.CharacterAdded:Connect(function(character)
 			task.defer(function()
 				if ESP.Enabled and character.Parent then
