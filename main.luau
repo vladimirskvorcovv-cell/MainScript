@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
@@ -1208,6 +1209,180 @@ function ESP.toggle(state)
 	end
 	return ESP.stop()
 end
+local FullBright = {
+	Enabled = false,
+	_savedLighting = nil,
+	_savedEffects = {},
+	_changed = nil,
+	_childAdded = nil,
+	_pending = false,
+	_applying = false,
+}
+
+local fullBrightTargets = {
+	Brightness = 2.4,
+	ClockTime = 14,
+	Ambient = Color3.fromRGB(185, 185, 185),
+	OutdoorAmbient = Color3.fromRGB(190, 190, 190),
+	FogStart = 0,
+	FogEnd = 100000,
+	FogColor = Color3.fromRGB(235, 240, 255),
+	GlobalShadows = false,
+	ExposureCompensation = 0.15,
+}
+
+local function saveLightingState()
+	if FullBright._savedLighting then
+		return
+	end
+
+	FullBright._savedLighting = {}
+	for property in pairs(fullBrightTargets) do
+		pcall(function()
+			FullBright._savedLighting[property] = Lighting[property]
+		end)
+	end
+end
+
+local function saveLightingEffect(effect)
+	if FullBright._savedEffects[effect] then
+		return
+	end
+
+	local data = {}
+	if effect:IsA("Atmosphere") then
+		for _, property in ipairs({ "Density", "Offset", "Haze", "Glare" }) do
+			pcall(function()
+				data[property] = effect[property]
+			end)
+		end
+	elseif effect:IsA("ColorCorrectionEffect") then
+		for _, property in ipairs({ "Enabled", "Brightness", "Contrast", "Saturation", "TintColor" }) do
+			pcall(function()
+				data[property] = effect[property]
+			end)
+		end
+	end
+
+	if next(data) then
+		FullBright._savedEffects[effect] = data
+	end
+end
+
+local function applyLightingEffect(effect)
+	saveLightingEffect(effect)
+	if effect:IsA("Atmosphere") then
+		pcall(function()
+			effect.Density = 0
+			effect.Offset = 0
+			effect.Haze = 0
+			effect.Glare = 0
+		end)
+	elseif effect:IsA("ColorCorrectionEffect") then
+		pcall(function()
+			effect.Enabled = false
+		end)
+	end
+end
+
+local function applyFullBright()
+	if not FullBright.Enabled or FullBright._applying then
+		return
+	end
+
+	FullBright._applying = true
+	pcall(function()
+		for property, value in pairs(fullBrightTargets) do
+			pcall(function()
+				Lighting[property] = value
+			end)
+		end
+		for _, effect in ipairs(Lighting:GetChildren()) do
+			applyLightingEffect(effect)
+		end
+	end)
+	FullBright._applying = false
+end
+
+local function requestFullBrightApply()
+	if not FullBright.Enabled or FullBright._applying or FullBright._pending then
+		return
+	end
+
+	FullBright._pending = true
+	task.delay(0.1, function()
+		FullBright._pending = false
+		applyFullBright()
+	end)
+end
+
+local function restoreFullBright()
+	if FullBright._savedLighting then
+		for property, value in pairs(FullBright._savedLighting) do
+			pcall(function()
+				Lighting[property] = value
+			end)
+		end
+	end
+
+	for effect, data in pairs(FullBright._savedEffects) do
+		if effect and effect.Parent then
+			for property, value in pairs(data) do
+				pcall(function()
+					effect[property] = value
+				end)
+			end
+		end
+	end
+
+	FullBright._savedLighting = nil
+	FullBright._savedEffects = {}
+end
+
+function FullBright.start()
+	if FullBright.Enabled then
+		return true
+	end
+
+	FullBright.Enabled = true
+	saveLightingState()
+	applyFullBright()
+	FullBright._changed = Lighting.Changed:Connect(function()
+		requestFullBrightApply()
+	end)
+	FullBright._childAdded = Lighting.ChildAdded:Connect(function(effect)
+		if FullBright.Enabled then
+			task.defer(function()
+				if effect.Parent then
+					applyLightingEffect(effect)
+				end
+			end)
+		end
+	end)
+	return true
+end
+
+function FullBright.stop()
+	if not FullBright.Enabled and not FullBright._changed and not FullBright._childAdded then
+		return true
+	end
+
+	FullBright.Enabled = false
+	disconnect(FullBright._changed)
+	disconnect(FullBright._childAdded)
+	FullBright._changed = nil
+	FullBright._childAdded = nil
+	FullBright._pending = false
+	restoreFullBright()
+	return true
+end
+
+function FullBright.toggle(state)
+	if state then
+		return FullBright.start()
+	end
+	return FullBright.stop()
+end
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
@@ -1352,12 +1527,13 @@ local flyControl = createSwitch("Fly", 1, Fly.toggle)
 local antiAfkControl = createSwitch("AntiAFK", 2, AntiAFK.toggle)
 local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
 local espControl = createSwitch("ESP", 4, ESP.toggle)
+local fullBrightControl = createSwitch("FullBright", 5, FullBright.toggle)
 local invisibilityControl = nil
 if Invisibility.isSupported() then
-	invisibilityControl = createSwitch("Invisibility", 5, Invisibility.toggle)
+	invisibilityControl = createSwitch("Invisibility", 6, Invisibility.toggle)
 end
 
-local speedRow = createRow("FlySpeedRow", 6)
+local speedRow = createRow("FlySpeedRow", 7)
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Name = "Label"
@@ -1720,6 +1896,9 @@ updateMiniStatus = function()
 	if espControl.isEnabled() then
 		table.insert(active, "E")
 	end
+	if fullBrightControl.isEnabled() then
+		table.insert(active, "B")
+	end
 	miniStatus.Text = table.concat(active, " ")
 end
 updateMiniStatus()
@@ -1998,6 +2177,7 @@ track(screenGui.Destroying:Connect(function()
 	AntiAFK.toggle(false)
 	Clicker.stop()
 	ESP.stop()
+	FullBright.stop()
 	if invisibilityControl then
 		Invisibility.toggle(false)
 	end
