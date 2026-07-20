@@ -1126,9 +1126,13 @@ local function appendESPInstanceData(parts, object, includeDescendants)
 			break
 		end
 
-		local matchedName = isESPTeamKey(child.Name)
-		if matchedName then
-			appendESPText(parts, child.Name)
+		local childName = string.lower(tostring(child.Name))
+		local matchedName = isESPTeamKey(childName)
+		if matchedName or string.find(childName, "red%-shirt") or string.find(childName, "blue%-shirt") or string.find(childName, "red%-pants") or string.find(childName, "blue%-pants") then
+			appendESPText(parts, childName)
+		end
+		if child:IsA("Shirt") or child:IsA("Pants") or child:IsA("ShirtGraphic") then
+			appendESPText(parts, childName)
 		end
 		if child:IsA("StringValue") or child:IsA("NumberValue") or child:IsA("IntValue") or child:IsA("BoolValue") or child:IsA("BrickColorValue") or child:IsA("Color3Value") then
 			if matchedName or tostring(child.Value) == "Red" or tostring(child.Value) == "Blue" or tostring(child.Value) == "red" or tostring(child.Value) == "blue" then
@@ -2325,4 +2329,5 @@ track(screenGui.Destroying:Connect(function()
 	saveSettingsNow()
 	table.clear(uiConnections)
 end))
+
 
