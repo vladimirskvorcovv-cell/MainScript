@@ -1061,6 +1061,7 @@ local ESP = {
 	_humanoidConnections = {},
 	_playerAdded = nil,
 	_playerRemoving = nil,
+	_colorLoop = 0,
 }
 
 local espFillColor = Color3.fromRGB(20, 255, 90)
@@ -1070,35 +1071,97 @@ local espRedOutlineColor = Color3.fromRGB(255, 190, 190)
 local espBlueFillColor = Color3.fromRGB(45, 135, 255)
 local espBlueOutlineColor = Color3.fromRGB(180, 215, 255)
 
-local function getESPColors(player)
-	local teamText = ""
-	if player.Team then
-		teamText = teamText .. " " .. string.lower(player.Team.Name)
+local function appendESPText(parts, value)
+	if value == nil then
+		return
 	end
+
+	local valueType = typeof(value)
+	if valueType == "Color3" then
+		if value.R > 0.55 and value.B < 0.45 then
+			table.insert(parts, "red")
+		elseif value.B > 0.55 and value.R < 0.45 then
+			table.insert(parts, "blue")
+		end
+	elseif valueType == "BrickColor" then
+		table.insert(parts, string.lower(value.Name))
+		table.insert(parts, string.lower(tostring(value)))
+	elseif valueType == "string" or valueType == "number" or valueType == "boolean" then
+		table.insert(parts, string.lower(tostring(value)))
+	end
+end
+
+local function isESPTeamKey(name)
+	name = string.lower(tostring(name))
+	return string.find(name, "team", 1, true)
+		or string.find(name, "side", 1, true)
+		or string.find(name, "faction", 1, true)
+		or string.find(name, "color", 1, true)
+		or string.find(name, "army", 1, true)
+		or string.find(name, "force", 1, true)
+		or string.find(name, "nation", 1, true)
+		or string.find(name, "squad", 1, true)
+end
+
+local function appendESPInstanceData(parts, object, includeDescendants)
+	if not object then
+		return
+	end
+
 	pcall(function()
-		teamText = teamText .. " " .. string.lower(player.TeamColor.Name)
-	end)
-	pcall(function()
-		teamText = teamText .. " " .. string.lower(tostring(player.TeamColor))
+		for name, value in pairs(object:GetAttributes()) do
+			if isESPTeamKey(name) then
+				appendESPText(parts, name)
+				appendESPText(parts, value)
+			elseif value == "Red" or value == "Blue" or value == "red" or value == "blue" then
+				appendESPText(parts, value)
+			end
+		end
 	end)
 
+	local objects = includeDescendants and object:GetDescendants() or object:GetChildren()
+	local limit = 140
+	for index, child in ipairs(objects) do
+		if index > limit then
+			break
+		end
+
+		local matchedName = isESPTeamKey(child.Name)
+		if matchedName then
+			appendESPText(parts, child.Name)
+		end
+		if child:IsA("StringValue") or child:IsA("NumberValue") or child:IsA("IntValue") or child:IsA("BoolValue") or child:IsA("BrickColorValue") or child:IsA("Color3Value") then
+			if matchedName or tostring(child.Value) == "Red" or tostring(child.Value) == "Blue" or tostring(child.Value) == "red" or tostring(child.Value) == "blue" then
+				appendESPText(parts, child.Value)
+			end
+		end
+	end
+end
+
+local function getESPColors(player, character)
+	local parts = {}
+	if player.Team then
+		appendESPText(parts, player.Team.Name)
+	end
+	pcall(function()
+		appendESPText(parts, player.TeamColor)
+	end)
+	pcall(function()
+		appendESPText(parts, player.TeamColor.Name)
+	end)
+	pcall(function()
+		appendESPText(parts, player.TeamColor.Color)
+	end)
+
+	appendESPInstanceData(parts, player, false)
+	appendESPInstanceData(parts, character, true)
+
+	local teamText = table.concat(parts, " ")
 	if string.find(teamText, "red", 1, true) then
 		return espRedFillColor, espRedOutlineColor
 	end
 	if string.find(teamText, "blue", 1, true) then
 		return espBlueFillColor, espBlueOutlineColor
-	end
-
-	local ok, color = pcall(function()
-		return player.TeamColor.Color
-	end)
-	if ok and color then
-		if color.R > 0.55 and color.B < 0.45 then
-			return espRedFillColor, espRedOutlineColor
-		end
-		if color.B > 0.55 and color.R < 0.45 then
-			return espBlueFillColor, espBlueOutlineColor
-		end
 	end
 
 	return espFillColor, espOutlineColor
@@ -1110,7 +1173,7 @@ local function updateESPColor(player)
 		return
 	end
 
-	local fillColor, outlineColor = getESPColors(player)
+	local fillColor, outlineColor = getESPColors(player, player.Character)
 	highlight.FillColor = fillColor
 	highlight.OutlineColor = outlineColor
 end
@@ -1190,6 +1253,9 @@ local function bindESPPlayer(player)
 	end
 
 	ESP._playerConnections[player] = {
+		player.AttributeChanged:Connect(function()
+			updateESPColor(player)
+		end),
 		player:GetPropertyChangedSignal("Team"):Connect(function()
 			updateESPColor(player)
 		end),
@@ -1237,6 +1303,16 @@ function ESP.start()
 		disconnectEspPlayer(player)
 		removeEspHighlight(player)
 	end)
+	ESP._colorLoop += 1
+	local colorLoop = ESP._colorLoop
+	task.spawn(function()
+		while ESP.Enabled and ESP._colorLoop == colorLoop do
+			for player in pairs(ESP._highlights) do
+				updateESPColor(player)
+			end
+			task.wait(1)
+		end
+	end)
 
 	return true
 end
@@ -1246,6 +1322,7 @@ function ESP.stop()
 		return true
 	end
 	ESP.Enabled = false
+	ESP._colorLoop += 1
 	disconnect(ESP._playerAdded)
 	disconnect(ESP._playerRemoving)
 	ESP._playerAdded = nil
@@ -2248,3 +2325,4 @@ track(screenGui.Destroying:Connect(function()
 	saveSettingsNow()
 	table.clear(uiConnections)
 end))
+
