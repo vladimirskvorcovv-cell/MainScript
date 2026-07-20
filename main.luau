@@ -13,7 +13,6 @@ local VirtualInputManager = select(2, pcall(function()
 end))
 
 local LocalPlayer = Players.LocalPlayer
-local Aimbot
 
 local Config = {
 	FlySpeed = 50,
@@ -27,7 +26,6 @@ local Config = {
 	ClickerHotkey = Enum.KeyCode.C,
 	ESPHotkey = Enum.KeyCode.V,
 	GuiHotkey = Enum.KeyCode.RightShift,
-	AimbotHotkey = Enum.KeyCode.B,
 	AntiAFKInterval = 120,
 	MinAntiAFKInterval = 10,
 	MaxAntiAFKInterval = 3600,
@@ -41,9 +39,6 @@ local Config = {
 	ClickTargetEnabled = false,
 	ClickTargetX = nil,
 	ClickTargetY = nil,
-	FOVCircleRadius = 120,
-	MinFOVCircleRadius = 30,
-	MaxFOVCircleRadius = 500,
 }
 
 local Theme = {
@@ -122,10 +117,6 @@ end
 local function clickMouse()
 	if not hasVirtualInput() then
 		return false, "VirtualInputManager is unavailable"
-	end
-
-	if Aimbot.Enabled then
-		Aimbot.aimAtClosestTarget()
 	end
 
 	local ok, err = pcall(function()
@@ -602,182 +593,6 @@ function Invisibility.toggle(state)
 	return Invisibility.apply(state)
 end
 
-Aimbot = {
-	Enabled = false,
-	_inputBegan = nil,
-	_inputEnded = nil,
-	_holding = false,
-}
-
-local function isVisible(targetPart)
-	local character = getCharacter()
-	if not character then
-		return false
-	end
-	local origin = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
-	if not origin then
-		return false
-	end
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Blacklist
-	params.FilterDescendantsInstances = {character, targetPart.Parent}
-	local result = workspace:Raycast(origin.Position, (targetPart.Position - origin.Position), params)
-	return result == nil
-end
-
-local function getAimPart(model)
-	if not model or model == getCharacter() then
-		return nil
-	end
-
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then
-		return nil
-	end
-
-	local head = model:FindFirstChild("Head")
-	local part = head or model:FindFirstChild("HumanoidRootPart")
-	return if part and part:IsA("BasePart") then part else nil
-end
-
-function Aimbot.getClosestTarget()
-	local camera = Workspace.CurrentCamera
-	local character = getCharacter()
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not camera or not rootPart then
-		return nil
-	end
-
-	local viewport = camera.ViewportSize
-	local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
-	local bestTarget = nil
-	local bestScreenDistance = math.huge
-	local bestWorldDistance = math.huge
-	local checkedModels = {}
-
-	local function consider(model)
-		if checkedModels[model] then
-			return
-		end
-		checkedModels[model] = true
-
-		local part = getAimPart(model)
-		if not part then
-			return
-		end
-
-		local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
-		if not onScreen then
-			return
-		end
-
-		local screenDistance = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-		if screenDistance > Config.FOVCircleRadius or not isVisible(part) then
-			return
-		end
-
-		local worldDistance = (part.Position - rootPart.Position).Magnitude
-		if screenDistance < bestScreenDistance or (screenDistance == bestScreenDistance and worldDistance < bestWorldDistance) then
-			bestScreenDistance = screenDistance
-			bestWorldDistance = worldDistance
-			bestTarget = part
-		end
-	end
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer then
-			consider(player.Character)
-		end
-	end
-
-	for _, descendant in ipairs(Workspace:GetDescendants()) do
-		if descendant:IsA("Humanoid") then
-			consider(descendant.Parent)
-		end
-	end
-
-	return bestTarget
-end
-
-function Aimbot.aimAtTarget(targetPart)
-	if not targetPart or not targetPart:IsA("BasePart") then
-		return false, "Target part is unavailable"
-	end
-
-	local camera = Workspace.CurrentCamera
-	if not camera then
-		return false, "Camera is unavailable"
-	end
-
-	local origin = camera.CFrame.Position
-	local offset = targetPart.Position - origin
-	if offset.Magnitude < 0.001 then
-		return false, "Target is too close"
-	end
-
-	camera.CFrame = CFrame.lookAt(origin, targetPart.Position, camera.CFrame.UpVector)
-	return true
-end
-
-function Aimbot.aimAtClosestTarget()
-	if not Aimbot.Enabled then
-		return false, "Aimbot is disabled"
-	end
-	local target = Aimbot.getClosestTarget()
-	if not target then
-		return false, "No visible target in FOV"
-	end
-	return Aimbot.aimAtTarget(target)
-end
-
-function Aimbot.start()
-	if Aimbot.Enabled then
-		return true
-	end
-	Aimbot.Enabled = true
-	Aimbot._holding = false
-	Aimbot._inputBegan = UserInputService.InputBegan:Connect(function(input, processed)
-		if processed or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
-			return
-		end
-		Aimbot._holding = true
-		Aimbot.aimAtClosestTarget()
-	end)
-	Aimbot._inputEnded = UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			Aimbot._holding = false
-		end
-	end)
-	RunService:BindToRenderStep("FlyAntiAFK_Aimbot", Enum.RenderPriority.Camera.Value + 1, function()
-		if Aimbot.Enabled and Aimbot._holding then
-			Aimbot.aimAtClosestTarget()
-		end
-	end)
-	return true
-end
-
-function Aimbot.stop()
-	if not Aimbot.Enabled and not Aimbot._inputBegan and not Aimbot._inputEnded then
-		return true
-	end
-	Aimbot.Enabled = false
-	Aimbot._holding = false
-	disconnect(Aimbot._inputBegan)
-	disconnect(Aimbot._inputEnded)
-	Aimbot._inputBegan = nil
-	Aimbot._inputEnded = nil
-	RunService:UnbindFromRenderStep("FlyAntiAFK_Aimbot")
-	return true
-end
-
-function Aimbot.toggle(state)
-	if state then
-		return Aimbot.start()
-	end
-	return Aimbot.stop()
-end
-
-
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
 local sessionState = storage.FlyAntiAFK_State
@@ -862,7 +677,7 @@ local function queueSaveSettings()
 	end)
 end
 
-for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "ESPHotkey", "GuiHotkey", "AimbotHotkey" }) do
+for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "ESPHotkey", "GuiHotkey" }) do
 	local keyName = sessionState.Hotkeys[configKey]
 	if type(keyName) == "string" and Enum.KeyCode[keyName] then
 		Config[configKey] = Enum.KeyCode[keyName]
@@ -880,7 +695,6 @@ applySavedNumber("FlySpeed", Config.MinSpeed, Config.MaxSpeed)
 applySavedNumber("FastSpeed", Config.MinFastSpeed, Config.MaxFastSpeed)
 applySavedNumber("AntiAFKInterval", Config.MinAntiAFKInterval, Config.MaxAntiAFKInterval)
 applySavedNumber("ClickInterval", Config.MinClickInterval, Config.MaxClickInterval)
-applySavedNumber("FOVCircleRadius", Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
 
 if sessionState.Settings.ClickButton == "Right" then
 	Config.ClickButton = "Right"
@@ -899,12 +713,6 @@ if type(sessionState.Settings.ClickTarget) == "table" then
 		Config.ClickTargetX = x
 		Config.ClickTargetY = y
 	end
-end
-
-if sessionState.Settings.AimbotEnabled == true then
-	Config.AimbotEnabled = true
-else
-	Config.AimbotEnabled = false
 end
 
 local function saveConfigValue(configKey)
@@ -1542,72 +1350,6 @@ function ESP.toggle(state)
 	return ESP.stop()
 end
 
-local FOVCircle = {
-	Enabled = false,
-	_frame = nil,
-	_stroke = nil,
-}
-
-local function updateFOVCircle()
-	local circle = FOVCircle._frame
-	if not circle then
-		return
-	end
-
-	local radius = math.floor(Config.FOVCircleRadius)
-	local diameter = radius * 2
-	circle.Size = UDim2.fromOffset(diameter, diameter)
-	circle.Position = UDim2.fromScale(0.5, 0.5)
-	circle.Visible = FOVCircle.Enabled
-end
-
-local function getFOVCircleFrame()
-	if FOVCircle._frame and FOVCircle._frame.Parent then
-		return FOVCircle._frame
-	end
-
-	local circle = Instance.new("Frame")
-	circle.Name = "FOVCircle"
-	circle.AnchorPoint = Vector2.new(0.5, 0.5)
-	circle.BackgroundTransparency = 1
-	circle.BorderSizePixel = 0
-	circle.Active = false
-	circle.ZIndex = 22
-	circle.Parent = screenGui
-	addCorner(circle, 1000)
-	FOVCircle._stroke = addStroke(circle, Color3.fromRGB(235, 245, 255), 0.08)
-	FOVCircle._stroke.Thickness = 1
-	FOVCircle._frame = circle
-	updateFOVCircle()
-	return circle
-end
-
-function FOVCircle.start()
-	if FOVCircle.Enabled then
-		return true
-	end
-	FOVCircle.Enabled = true
-	getFOVCircleFrame()
-	updateFOVCircle()
-	return true
-end
-
-function FOVCircle.stop()
-	if not FOVCircle.Enabled then
-		return true
-	end
-	FOVCircle.Enabled = false
-	updateFOVCircle()
-	return true
-end
-
-function FOVCircle.toggle(state)
-	if state then
-		return FOVCircle.start()
-	end
-	return FOVCircle.stop()
-end
-
 local FullBright = {
 	Enabled = false,
 	_savedLighting = nil,
@@ -1783,6 +1525,126 @@ function FullBright.toggle(state)
 	return FullBright.stop()
 end
 
+local Vegetation = {
+	Enabled = false,
+	_descendantAdded = nil,
+	_originalTransparency = setmetatable({}, { __mode = "k" }),
+	_terrain = nil,
+	_terrainDecoration = nil,
+	_terrainDecorationSaved = false,
+}
+
+local vegetationKeywords = {
+	"grass",
+	"tree",
+	"leaf",
+	"leaves",
+	"branch",
+	"bush",
+	"shrub",
+	"foliage",
+	"plant",
+	"fern",
+	"vine",
+	"weed",
+	"flower",
+}
+
+local function isVegetationPart(part)
+	if not part:IsA("BasePart") then
+		return false
+	end
+
+	local name = string.lower(part.Name)
+	for _, keyword in ipairs(vegetationKeywords) do
+		if string.find(name, keyword, 1, true) then
+			return true
+		end
+	end
+
+	local materialName = part.Material.Name
+	return materialName == "Grass" or materialName == "LeafyGrass"
+end
+
+local function hideVegetationPart(part)
+	if not isVegetationPart(part) then
+		return
+	end
+	if Vegetation._originalTransparency[part] == nil then
+		Vegetation._originalTransparency[part] = part.LocalTransparencyModifier
+	end
+	part.LocalTransparencyModifier = 1
+end
+
+function Vegetation.start()
+	if Vegetation.Enabled then
+		return true
+	end
+
+	Vegetation.Enabled = true
+	for _, descendant in ipairs(Workspace:GetDescendants()) do
+		hideVegetationPart(descendant)
+	end
+
+	Vegetation._descendantAdded = Workspace.DescendantAdded:Connect(function(descendant)
+		if Vegetation.Enabled then
+			hideVegetationPart(descendant)
+		end
+	end)
+
+	local terrain = Workspace:FindFirstChildOfClass("Terrain")
+	if terrain then
+		local ok, decoration = pcall(function()
+			return terrain.Decoration
+		end)
+		if ok then
+			Vegetation._terrain = terrain
+			Vegetation._terrainDecoration = decoration
+			Vegetation._terrainDecorationSaved = true
+			pcall(function()
+				terrain.Decoration = false
+			end)
+		end
+	end
+
+	return true
+end
+
+function Vegetation.stop()
+	if not Vegetation.Enabled and not Vegetation._descendantAdded then
+		return true
+	end
+
+	Vegetation.Enabled = false
+	disconnect(Vegetation._descendantAdded)
+	Vegetation._descendantAdded = nil
+
+	for part, originalTransparency in pairs(Vegetation._originalTransparency) do
+		if part.Parent then
+			part.LocalTransparencyModifier = originalTransparency
+		end
+	end
+	table.clear(Vegetation._originalTransparency)
+
+	if Vegetation._terrainDecorationSaved and Vegetation._terrain and Vegetation._terrain.Parent then
+		pcall(function()
+			Vegetation._terrain.Decoration = Vegetation._terrainDecoration
+		end)
+	end
+	Vegetation._terrain = nil
+	Vegetation._terrainDecoration = nil
+	Vegetation._terrainDecorationSaved = false
+
+	return true
+end
+
+function Vegetation.toggle(state)
+	if state then
+		return Vegetation.start()
+	end
+	return Vegetation.stop()
+end
+
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
@@ -1928,19 +1790,11 @@ local antiAfkControl = createSwitch("AntiAFK", 2, AntiAFK.toggle)
 local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
 local espControl = createSwitch("ESP", 4, ESP.toggle)
 local fullBrightControl = createSwitch("FullBright", 5, FullBright.toggle)
-local fovCircleControl = createSwitch("FOV circle", 6, FOVCircle.toggle)
-local aimbotControl = createSwitch("Aimbot", 7, function(state)
-	local ok, message = Aimbot.toggle(state)
-	if ok then
-		Config.AimbotEnabled = state == true
-		saveConfigValue("AimbotEnabled")
-	end
-	return ok, message
-end)
 local invisibilityControl = nil
 if Invisibility.isSupported() then
-	invisibilityControl = createSwitch("Invisibility", 8, Invisibility.toggle)
+	invisibilityControl = createSwitch("Invisibility", 6, Invisibility.toggle)
 end
+local vegetationControl = createSwitch("No foliage", 7, Vegetation.toggle)
 
 local speedRow = createRow("FlySpeedRow", 9)
 
@@ -1979,77 +1833,6 @@ track(speedBox.FocusLost:Connect(function()
 		saveConfigValue("FlySpeed")
 	end
 	speedBox.Text = tostring(Config.FlySpeed)
-end))
-
-local fovRadiusRow = createRow("FOVRadiusRow", 10)
-
-local fovRadiusLabel = Instance.new("TextLabel")
-fovRadiusLabel.Name = "Label"
-fovRadiusLabel.Size = UDim2.new(0.5, -12, 1, 0)
-fovRadiusLabel.Position = UDim2.fromOffset(12, 0)
-fovRadiusLabel.BackgroundTransparency = 1
-fovRadiusLabel.Text = "FOV radius"
-fovRadiusLabel.Font = Enum.Font.GothamMedium
-fovRadiusLabel.TextSize = 14
-fovRadiusLabel.TextColor3 = Theme.Text
-fovRadiusLabel.TextXAlignment = Enum.TextXAlignment.Left
-fovRadiusLabel.Parent = fovRadiusRow
-
-local fovRadiusBox = Instance.new("TextBox")
-fovRadiusBox.Name = "RadiusBox"
-fovRadiusBox.Size = UDim2.fromOffset(54, 30)
-fovRadiusBox.Position = UDim2.new(1, -132, 0.5, -15)
-fovRadiusBox.BackgroundColor3 = Theme.PanelSoft
-fovRadiusBox.BorderSizePixel = 0
-fovRadiusBox.Font = Enum.Font.GothamMedium
-fovRadiusBox.TextSize = 14
-fovRadiusBox.TextColor3 = Theme.Text
-fovRadiusBox.PlaceholderColor3 = Theme.Muted
-fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
-fovRadiusBox.PlaceholderText = "Radius"
-fovRadiusBox.ClearTextOnFocus = false
-fovRadiusBox.Parent = fovRadiusRow
-addCorner(fovRadiusBox, 6)
-
-local function setFOVRadius(value)
-	value = clampNumber(value, Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
-	if not value then
-		return
-	end
-	Config.FOVCircleRadius = value
-	fovRadiusBox.Text = tostring(value)
-	saveConfigValue("FOVCircleRadius")
-	updateFOVCircle()
-end
-
-local function createFOVStepButton(name, text, xOffset, delta)
-	local button = Instance.new("TextButton")
-	button.Name = name
-	button.Size = UDim2.fromOffset(30, 30)
-	button.Position = UDim2.new(1, xOffset, 0.5, -15)
-	button.BackgroundColor3 = Theme.Button
-	button.BorderSizePixel = 0
-	button.Font = Enum.Font.GothamBold
-	button.TextSize = 18
-	button.TextColor3 = Theme.Text
-	button.Text = text
-	button.Parent = fovRadiusRow
-	addCorner(button, 6)
-	track(button.MouseButton1Click:Connect(function()
-		setFOVRadius(Config.FOVCircleRadius + delta)
-	end))
-end
-
-createFOVStepButton("Decrease", "-", -74, -10)
-createFOVStepButton("Increase", "+", -40, 10)
-
-track(fovRadiusBox.FocusLost:Connect(function()
-	local value = clampNumber(fovRadiusBox.Text, Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
-	if value then
-		setFOVRadius(value)
-	else
-		fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
-	end
 end))
 
 local clickerControl = createSwitch("Auto clicker", 1, Clicker.toggle, clickerPage)
@@ -2238,7 +2021,6 @@ createHotkeyRow("NoClip", 3, "NoClipHotkey", settingsPage)
 createHotkeyRow("Clicker", 4, "ClickerHotkey", settingsPage)
 createHotkeyRow("ESP", 5, "ESPHotkey", settingsPage)
 createHotkeyRow("GUI", 6, "GuiHotkey", settingsPage)
-createHotkeyRow("Aimbot", 7, "AimbotHotkey", settingsPage)
 
 local fastSpeedRow = createRow("FastFlySpeedRow", 8, settingsPage)
 
@@ -2357,11 +2139,6 @@ end))
 updateHotkeyBindings()
 updateCanvasSize()
 
-if Config.AimbotEnabled then
-	aimbotControl.setState(true)
-	Aimbot.start()
-end
-
 updateMiniStatus = function()
 	local active = {}
 	if flyControl.isEnabled() then
@@ -2385,11 +2162,8 @@ updateMiniStatus = function()
 	if fullBrightControl.isEnabled() then
 		table.insert(active, "B")
 	end
-	if fovCircleControl.isEnabled() then
-		table.insert(active, "O")
-	end
-	if aimbotControl.isEnabled() then
-		table.insert(active, "M")
+	if vegetationControl.isEnabled() then
+		table.insert(active, "G")
 	end
 	miniStatus.Text = table.concat(active, " ")
 end
@@ -2468,15 +2242,12 @@ resetSettings = function()
 	Config.ClickerHotkey = Enum.KeyCode.C
 	Config.ESPHotkey = Enum.KeyCode.V
 	Config.GuiHotkey = Enum.KeyCode.RightShift
-	Config.AimbotHotkey = Enum.KeyCode.B
 	Config.AntiAFKInterval = 120
 	Config.ClickInterval = 0.1
-	Config.FOVCircleRadius = 120
 	Config.ClickButton = "Left"
 	Config.ClickTargetEnabled = false
 	Config.ClickTargetX = nil
 	Config.ClickTargetY = nil
-	Config.AimbotEnabled = false
 	sessionState.Hotkeys = {}
 	sessionState.Settings = {}
 	sessionState.Collapsed = false
@@ -2499,14 +2270,10 @@ resetSettings = function()
 	fastSpeedBox.Text = tostring(Config.FastSpeed)
 	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
 	clickDelayBox.Text = tostring(Config.ClickInterval)
-	fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
-	updateFOVCircle()
 	clickModeButton.Text = Config.ClickButton
 	clickTargetButton.Text = "Mouse"
 	clickTargetMarker.Visible = false
 	clickTargetMarker.Position = saveClickTargetPosition(getDefaultClickTargetPosition())
-	aimbotControl.setState(false)
-	Aimbot.stop()
 	updateHotkeyBindings()
 	updateMiniStatus()
 	queueSaveSettings()
@@ -2643,8 +2410,6 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 		else
 			collapseGui()
 		end
-	elseif input.KeyCode == Config.AimbotHotkey then
-		aimbotControl.toggle()
 	end
 end))
 
@@ -2679,8 +2444,7 @@ track(screenGui.Destroying:Connect(function()
 	Clicker.stop()
 	ESP.stop()
 	FullBright.stop()
-	FOVCircle.stop()
-	Aimbot.stop()
+	Vegetation.stop()
 	if invisibilityControl then
 		Invisibility.toggle(false)
 	end
