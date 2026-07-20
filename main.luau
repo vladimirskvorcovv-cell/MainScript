@@ -1959,8 +1959,8 @@ fovRadiusLabel.Parent = fovRadiusRow
 
 local fovRadiusBox = Instance.new("TextBox")
 fovRadiusBox.Name = "RadiusBox"
-fovRadiusBox.Size = UDim2.fromOffset(82, 30)
-fovRadiusBox.Position = UDim2.new(1, -94, 0.5, -15)
+fovRadiusBox.Size = UDim2.fromOffset(54, 30)
+fovRadiusBox.Position = UDim2.new(1, -132, 0.5, -15)
 fovRadiusBox.BackgroundColor3 = Theme.PanelSoft
 fovRadiusBox.BorderSizePixel = 0
 fovRadiusBox.Font = Enum.Font.GothamMedium
@@ -1973,14 +1973,45 @@ fovRadiusBox.ClearTextOnFocus = false
 fovRadiusBox.Parent = fovRadiusRow
 addCorner(fovRadiusBox, 6)
 
+local function setFOVRadius(value)
+	value = clampNumber(value, Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
+	if not value then
+		return
+	end
+	Config.FOVCircleRadius = value
+	fovRadiusBox.Text = tostring(value)
+	saveConfigValue("FOVCircleRadius")
+	updateFOVCircle()
+end
+
+local function createFOVStepButton(name, text, xOffset, delta)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = UDim2.fromOffset(30, 30)
+	button.Position = UDim2.new(1, xOffset, 0.5, -15)
+	button.BackgroundColor3 = Theme.Button
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 18
+	button.TextColor3 = Theme.Text
+	button.Text = text
+	button.Parent = fovRadiusRow
+	addCorner(button, 6)
+	track(button.MouseButton1Click:Connect(function()
+		setFOVRadius(Config.FOVCircleRadius + delta)
+	end))
+end
+
+createFOVStepButton("Decrease", "-", -74, -10)
+createFOVStepButton("Increase", "+", -40, 10)
+
 track(fovRadiusBox.FocusLost:Connect(function()
 	local value = clampNumber(fovRadiusBox.Text, Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
 	if value then
-		Config.FOVCircleRadius = value
-		saveConfigValue("FOVCircleRadius")
-		updateFOVCircle()
+		setFOVRadius(value)
+	else
+		fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
 	end
-	fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
 end))
 
 local clickerControl = createSwitch("Auto clicker", 1, Clicker.toggle, clickerPage)
