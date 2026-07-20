@@ -2603,3 +2603,16 @@ track(screenGui.Destroying:Connect(function()
 	saveSettingsNow()
 	table.clear(uiConnections)
 end))
+
+track(UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then
+        return
+    end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and Aimbot.Enabled then
+        local target = Aimbot.getClosestTarget()
+        if target then
+            Aimbot.aimAtTarget(target)
+            task.wait(0.02)
+        end
+    end
+end))
