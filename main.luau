@@ -605,6 +605,8 @@ end
 Aimbot = {
 	Enabled = false,
 	_inputBegan = nil,
+	_inputEnded = nil,
+	_holding = false,
 }
 
 local function isVisible(targetPart)
@@ -662,7 +664,7 @@ function Aimbot.getClosestTarget()
 									if distToCenter < bestScreenDistance or (distToCenter == bestScreenDistance and worldDistance < bestWorldDistance) then
 										bestScreenDistance = distToCenter
 										bestWorldDistance = worldDistance
-										bestTarget = screenPos
+										bestTarget = part
 									end
 								end
 							end
@@ -676,21 +678,23 @@ function Aimbot.getClosestTarget()
 	return bestTarget
 end
 
-function Aimbot.aimAtTarget(screenPos)
-	if not hasVirtualInput() then
-		return false, "VirtualInputManager is unavailable"
+function Aimbot.aimAtTarget(targetPart)
+	if not targetPart or not targetPart:IsA("BasePart") then
+		return false, "Target part is unavailable"
 	end
-	if typeof(screenPos) ~= "Vector3" then
-		return false, "Target position is unavailable"
+
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return false, "Camera is unavailable"
 	end
-	local x = math.floor(screenPos.X)
-	local y = math.floor(screenPos.Y)
-	local ok, err = pcall(function()
-		VirtualInputManager:SendMouseMoveEvent(x, y, game)
-	end)
-	if not ok then
-		return false, err
+
+	local origin = camera.CFrame.Position
+	local offset = targetPart.Position - origin
+	if offset.Magnitude < 0.001 then
+		return false, "Target is too close"
 	end
+
+	camera.CFrame = CFrame.lookAt(origin, targetPart.Position, camera.CFrame.UpVector)
 	return true
 end
 
@@ -709,26 +713,39 @@ function Aimbot.start()
 	if Aimbot.Enabled then
 		return true
 	end
-	if not hasVirtualInput() then
-		return false, "VirtualInputManager is unavailable"
-	end
 	Aimbot.Enabled = true
+	Aimbot._holding = false
 	Aimbot._inputBegan = UserInputService.InputBegan:Connect(function(input, processed)
 		if processed or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
 			return
 		end
+		Aimbot._holding = true
 		Aimbot.aimAtClosestTarget()
+	end)
+	Aimbot._inputEnded = UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			Aimbot._holding = false
+		end
+	end)
+	RunService:BindToRenderStep("FlyAntiAFK_Aimbot", Enum.RenderPriority.Camera.Value + 1, function()
+		if Aimbot.Enabled and Aimbot._holding then
+			Aimbot.aimAtClosestTarget()
+		end
 	end)
 	return true
 end
 
 function Aimbot.stop()
-	if not Aimbot.Enabled then
+	if not Aimbot.Enabled and not Aimbot._inputBegan and not Aimbot._inputEnded then
 		return true
 	end
 	Aimbot.Enabled = false
+	Aimbot._holding = false
 	disconnect(Aimbot._inputBegan)
+	disconnect(Aimbot._inputEnded)
 	Aimbot._inputBegan = nil
+	Aimbot._inputEnded = nil
+	RunService:UnbindFromRenderStep("FlyAntiAFK_Aimbot")
 	return true
 end
 
