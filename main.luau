@@ -13,6 +13,7 @@ local VirtualInputManager = select(2, pcall(function()
 end))
 
 local LocalPlayer = Players.LocalPlayer
+local Aimbot
 
 local Config = {
 	FlySpeed = 50,
@@ -124,11 +125,7 @@ local function clickMouse()
 	end
 
 	if Aimbot.Enabled then
-		local target = Aimbot.getClosestTarget()
-		if target then
-			Aimbot.aimAtTarget(target)
-			task.wait(0.02)
-		end
+		Aimbot.aimAtClosestTarget()
 	end
 
 	local ok, err = pcall(function()
@@ -605,8 +602,9 @@ function Invisibility.toggle(state)
 	return Invisibility.apply(state)
 end
 
-local Aimbot = {
+Aimbot = {
 	Enabled = false,
+	_inputBegan = nil,
 }
 
 local function isVisible(targetPart)
@@ -634,7 +632,8 @@ function Aimbot.getClosestTarget()
 	local viewport = camera.ViewportSize
 	local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
 	local bestTarget = nil
-	local bestDist = math.huge
+	local bestScreenDistance = math.huge
+	local bestWorldDistance = math.huge
 
 	local character = getCharacter()
 	if not character then
@@ -653,15 +652,16 @@ function Aimbot.getClosestTarget()
 				if humanoid and humanoid.Health > 0 then
 					local head = char:FindFirstChild("Head")
 					local part = head or char:FindFirstChild("HumanoidRootPart")
-					if part then
+					if part and part:IsA("BasePart") then
 						local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
 						if onScreen then
 							local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
 							if distToCenter <= Config.FOVCircleRadius then
 								if isVisible(part) then
-									local distance = (part.Position - rootPart.Position).Magnitude
-									if distance < bestDist then
-										bestDist = distance
+									local worldDistance = (part.Position - rootPart.Position).Magnitude
+									if distToCenter < bestScreenDistance or (distToCenter == bestScreenDistance and worldDistance < bestWorldDistance) then
+										bestScreenDistance = distToCenter
+										bestWorldDistance = worldDistance
 										bestTarget = screenPos
 									end
 								end
@@ -678,14 +678,31 @@ end
 
 function Aimbot.aimAtTarget(screenPos)
 	if not hasVirtualInput() then
-		return false
+		return false, "VirtualInputManager is unavailable"
+	end
+	if typeof(screenPos) ~= "Vector3" then
+		return false, "Target position is unavailable"
 	end
 	local x = math.floor(screenPos.X)
 	local y = math.floor(screenPos.Y)
-	pcall(function()
+	local ok, err = pcall(function()
 		VirtualInputManager:SendMouseMoveEvent(x, y, game)
 	end)
+	if not ok then
+		return false, err
+	end
 	return true
+end
+
+function Aimbot.aimAtClosestTarget()
+	if not Aimbot.Enabled then
+		return false, "Aimbot is disabled"
+	end
+	local target = Aimbot.getClosestTarget()
+	if not target then
+		return false, "No visible target in FOV"
+	end
+	return Aimbot.aimAtTarget(target)
 end
 
 function Aimbot.start()
@@ -696,6 +713,12 @@ function Aimbot.start()
 		return false, "VirtualInputManager is unavailable"
 	end
 	Aimbot.Enabled = true
+	Aimbot._inputBegan = UserInputService.InputBegan:Connect(function(input, processed)
+		if processed or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+			return
+		end
+		Aimbot.aimAtClosestTarget()
+	end)
 	return true
 end
 
@@ -704,6 +727,8 @@ function Aimbot.stop()
 		return true
 	end
 	Aimbot.Enabled = false
+	disconnect(Aimbot._inputBegan)
+	Aimbot._inputBegan = nil
 	return true
 end
 
@@ -714,17 +739,6 @@ function Aimbot.toggle(state)
 	return Aimbot.stop()
 end
 
-function Aimbot.aimAtTarget(screenPos)
-	if not hasVirtualInput() then
-		return false
-	end
-	local x = math.floor(screenPos.X)
-	local y = math.floor(screenPos.Y)
-	pcall(function()
-		VirtualInputManager:SendMouseMoveEvent(x, y, game)
-	end)
-	return true
-end
 
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
@@ -1877,7 +1891,14 @@ local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
 local espControl = createSwitch("ESP", 4, ESP.toggle)
 local fullBrightControl = createSwitch("FullBright", 5, FullBright.toggle)
 local fovCircleControl = createSwitch("FOV circle", 6, FOVCircle.toggle)
-local aimbotControl = createSwitch("Aimbot", 7, Aimbot.toggle)
+local aimbotControl = createSwitch("Aimbot", 7, function(state)
+	local ok, message = Aimbot.toggle(state)
+	if ok then
+		Config.AimbotEnabled = state == true
+		saveConfigValue("AimbotEnabled")
+	end
+	return ok, message
+end)
 local invisibilityControl = nil
 if Invisibility.isSupported() then
 	invisibilityControl = createSwitch("Invisibility", 8, Invisibility.toggle)
@@ -2604,15 +2625,3 @@ track(screenGui.Destroying:Connect(function()
 	table.clear(uiConnections)
 end))
 
-track(UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then
-        return
-    end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 and Aimbot.Enabled then
-        local target = Aimbot.getClosestTarget()
-        if target then
-            Aimbot.aimAtTarget(target)
-            task.wait(0.02)
-        end
-    end
-end))
