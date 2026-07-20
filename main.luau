@@ -26,6 +26,7 @@ local Config = {
 	ClickerHotkey = Enum.KeyCode.C,
 	ESPHotkey = Enum.KeyCode.V,
 	GuiHotkey = Enum.KeyCode.RightShift,
+	AimbotHotkey = Enum.KeyCode.B,
 	AntiAFKInterval = 120,
 	MinAntiAFKInterval = 10,
 	MaxAntiAFKInterval = 3600,
@@ -39,6 +40,9 @@ local Config = {
 	ClickTargetEnabled = false,
 	ClickTargetX = nil,
 	ClickTargetY = nil,
+	FOVCircleRadius = 120,
+	MinFOVCircleRadius = 30,
+	MaxFOVCircleRadius = 500,
 }
 
 local Theme = {
@@ -118,6 +122,15 @@ local function clickMouse()
 	if not hasVirtualInput() then
 		return false, "VirtualInputManager is unavailable"
 	end
+
+	if Aimbot.Enabled then
+		local target = Aimbot.getClosestTarget()
+		if target then
+			Aimbot.aimAtTarget(target)
+			task.wait(0.02)
+		end
+	end
+
 	local ok, err = pcall(function()
 		local position = UserInputService:GetMouseLocation()
 		if Config.ClickTargetEnabled and type(Config.ClickTargetX) == "number" and type(Config.ClickTargetY) == "number" then
@@ -592,6 +605,87 @@ function Invisibility.toggle(state)
 	return Invisibility.apply(state)
 end
 
+local Aimbot = {
+	Enabled = false,
+}
+
+function Aimbot.getClosestTarget()
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+
+	local viewport = camera.ViewportSize
+	local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+	local bestTarget = nil
+	local bestDist = math.huge
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			local char = player.Character
+			if char then
+				local humanoid = char:FindFirstChildOfClass("Humanoid")
+				if humanoid and humanoid.Health > 0 then
+					local head = char:FindFirstChild("Head")
+					local part = head or char:FindFirstChild("HumanoidRootPart")
+					if part then
+						local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+						if onScreen then
+							local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+							if dist <= Config.FOVCircleRadius then
+								if dist < bestDist then
+									bestDist = dist
+									bestTarget = screenPos
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestTarget
+end
+
+function Aimbot.aimAtTarget(screenPos)
+	if not hasVirtualInput() then
+		return false
+	end
+	local x = math.floor(screenPos.X)
+	local y = math.floor(screenPos.Y)
+	pcall(function()
+		VirtualInputManager:SendMouseMoveEvent(x, y, game)
+	end)
+	return true
+end
+
+function Aimbot.start()
+	if Aimbot.Enabled then
+		return true
+	end
+	if not hasVirtualInput() then
+		return false, "VirtualInputManager is unavailable"
+	end
+	Aimbot.Enabled = true
+	return true
+end
+
+function Aimbot.stop()
+	if not Aimbot.Enabled then
+		return true
+	end
+	Aimbot.Enabled = false
+	return true
+end
+
+function Aimbot.toggle(state)
+	if state then
+		return Aimbot.start()
+	end
+	return Aimbot.stop()
+end
+
 local storage = (getgenv and getgenv()) or _G
 storage.FlyAntiAFK_State = storage.FlyAntiAFK_State or {}
 local sessionState = storage.FlyAntiAFK_State
@@ -676,7 +770,7 @@ local function queueSaveSettings()
 	end)
 end
 
-for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "ESPHotkey", "GuiHotkey" }) do
+for _, configKey in ipairs({ "Hotkey", "AntiAFKHotkey", "NoClipHotkey", "ClickerHotkey", "ESPHotkey", "GuiHotkey", "AimbotHotkey" }) do
 	local keyName = sessionState.Hotkeys[configKey]
 	if type(keyName) == "string" and Enum.KeyCode[keyName] then
 		Config[configKey] = Enum.KeyCode[keyName]
@@ -694,6 +788,7 @@ applySavedNumber("FlySpeed", Config.MinSpeed, Config.MaxSpeed)
 applySavedNumber("FastSpeed", Config.MinFastSpeed, Config.MaxFastSpeed)
 applySavedNumber("AntiAFKInterval", Config.MinAntiAFKInterval, Config.MaxAntiAFKInterval)
 applySavedNumber("ClickInterval", Config.MinClickInterval, Config.MaxClickInterval)
+applySavedNumber("FOVCircleRadius", Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
 
 if sessionState.Settings.ClickButton == "Right" then
 	Config.ClickButton = "Right"
@@ -712,6 +807,12 @@ if type(sessionState.Settings.ClickTarget) == "table" then
 		Config.ClickTargetX = x
 		Config.ClickTargetY = y
 	end
+end
+
+if sessionState.Settings.AimbotEnabled == true then
+	Config.AimbotEnabled = true
+else
+	Config.AimbotEnabled = false
 end
 
 local function saveConfigValue(configKey)
@@ -1348,6 +1449,73 @@ function ESP.toggle(state)
 	end
 	return ESP.stop()
 end
+
+local FOVCircle = {
+	Enabled = false,
+	_frame = nil,
+	_stroke = nil,
+}
+
+local function updateFOVCircle()
+	local circle = FOVCircle._frame
+	if not circle then
+		return
+	end
+
+	local radius = math.floor(Config.FOVCircleRadius)
+	local diameter = radius * 2
+	circle.Size = UDim2.fromOffset(diameter, diameter)
+	circle.Position = UDim2.fromScale(0.5, 0.5)
+	circle.Visible = FOVCircle.Enabled
+end
+
+local function getFOVCircleFrame()
+	if FOVCircle._frame and FOVCircle._frame.Parent then
+		return FOVCircle._frame
+	end
+
+	local circle = Instance.new("Frame")
+	circle.Name = "FOVCircle"
+	circle.AnchorPoint = Vector2.new(0.5, 0.5)
+	circle.BackgroundTransparency = 1
+	circle.BorderSizePixel = 0
+	circle.Active = false
+	circle.ZIndex = 22
+	circle.Parent = screenGui
+	addCorner(circle, 1000)
+	FOVCircle._stroke = addStroke(circle, Color3.fromRGB(235, 245, 255), 0.08)
+	FOVCircle._stroke.Thickness = 1
+	FOVCircle._frame = circle
+	updateFOVCircle()
+	return circle
+end
+
+function FOVCircle.start()
+	if FOVCircle.Enabled then
+		return true
+	end
+	FOVCircle.Enabled = true
+	getFOVCircleFrame()
+	updateFOVCircle()
+	return true
+end
+
+function FOVCircle.stop()
+	if not FOVCircle.Enabled then
+		return true
+	end
+	FOVCircle.Enabled = false
+	updateFOVCircle()
+	return true
+end
+
+function FOVCircle.toggle(state)
+	if state then
+		return FOVCircle.start()
+	end
+	return FOVCircle.stop()
+end
+
 local FullBright = {
 	Enabled = false,
 	_savedLighting = nil,
@@ -1522,6 +1690,7 @@ function FullBright.toggle(state)
 	end
 	return FullBright.stop()
 end
+
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
@@ -1667,12 +1836,14 @@ local antiAfkControl = createSwitch("AntiAFK", 2, AntiAFK.toggle)
 local noClipControl = createSwitch("NoClip", 3, NoClip.toggle)
 local espControl = createSwitch("ESP", 4, ESP.toggle)
 local fullBrightControl = createSwitch("FullBright", 5, FullBright.toggle)
+local fovCircleControl = createSwitch("FOV circle", 6, FOVCircle.toggle)
+local aimbotControl = createSwitch("Aimbot", 7, Aimbot.toggle)
 local invisibilityControl = nil
 if Invisibility.isSupported() then
-	invisibilityControl = createSwitch("Invisibility", 6, Invisibility.toggle)
+	invisibilityControl = createSwitch("Invisibility", 8, Invisibility.toggle)
 end
 
-local speedRow = createRow("FlySpeedRow", 7)
+local speedRow = createRow("FlySpeedRow", 9)
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Name = "Label"
@@ -1709,6 +1880,46 @@ track(speedBox.FocusLost:Connect(function()
 		saveConfigValue("FlySpeed")
 	end
 	speedBox.Text = tostring(Config.FlySpeed)
+end))
+
+local fovRadiusRow = createRow("FOVRadiusRow", 10)
+
+local fovRadiusLabel = Instance.new("TextLabel")
+fovRadiusLabel.Name = "Label"
+fovRadiusLabel.Size = UDim2.new(0.5, -12, 1, 0)
+fovRadiusLabel.Position = UDim2.fromOffset(12, 0)
+fovRadiusLabel.BackgroundTransparency = 1
+fovRadiusLabel.Text = "FOV radius"
+fovRadiusLabel.Font = Enum.Font.GothamMedium
+fovRadiusLabel.TextSize = 14
+fovRadiusLabel.TextColor3 = Theme.Text
+fovRadiusLabel.TextXAlignment = Enum.TextXAlignment.Left
+fovRadiusLabel.Parent = fovRadiusRow
+
+local fovRadiusBox = Instance.new("TextBox")
+fovRadiusBox.Name = "RadiusBox"
+fovRadiusBox.Size = UDim2.fromOffset(82, 30)
+fovRadiusBox.Position = UDim2.new(1, -94, 0.5, -15)
+fovRadiusBox.BackgroundColor3 = Theme.PanelSoft
+fovRadiusBox.BorderSizePixel = 0
+fovRadiusBox.Font = Enum.Font.GothamMedium
+fovRadiusBox.TextSize = 14
+fovRadiusBox.TextColor3 = Theme.Text
+fovRadiusBox.PlaceholderColor3 = Theme.Muted
+fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
+fovRadiusBox.PlaceholderText = "Radius"
+fovRadiusBox.ClearTextOnFocus = false
+fovRadiusBox.Parent = fovRadiusRow
+addCorner(fovRadiusBox, 6)
+
+track(fovRadiusBox.FocusLost:Connect(function()
+	local value = clampNumber(fovRadiusBox.Text, Config.MinFOVCircleRadius, Config.MaxFOVCircleRadius)
+	if value then
+		Config.FOVCircleRadius = value
+		saveConfigValue("FOVCircleRadius")
+		updateFOVCircle()
+	end
+	fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
 end))
 
 local clickerControl = createSwitch("Auto clicker", 1, Clicker.toggle, clickerPage)
@@ -1897,8 +2108,9 @@ createHotkeyRow("NoClip", 3, "NoClipHotkey", settingsPage)
 createHotkeyRow("Clicker", 4, "ClickerHotkey", settingsPage)
 createHotkeyRow("ESP", 5, "ESPHotkey", settingsPage)
 createHotkeyRow("GUI", 6, "GuiHotkey", settingsPage)
+createHotkeyRow("Aimbot", 7, "AimbotHotkey", settingsPage)
 
-local fastSpeedRow = createRow("FastFlySpeedRow", 6, settingsPage)
+local fastSpeedRow = createRow("FastFlySpeedRow", 8, settingsPage)
 
 local fastSpeedLabel = Instance.new("TextLabel")
 fastSpeedLabel.Name = "Label"
@@ -1937,7 +2149,7 @@ track(fastSpeedBox.FocusLost:Connect(function()
 	fastSpeedBox.Text = tostring(Config.FastSpeed)
 end))
 
-local antiAfkIntervalRow = createRow("AntiAFKIntervalRow", 7, settingsPage)
+local antiAfkIntervalRow = createRow("AntiAFKIntervalRow", 9, settingsPage)
 
 local antiAfkIntervalLabel = Instance.new("TextLabel")
 antiAfkIntervalLabel.Name = "Label"
@@ -1976,7 +2188,7 @@ track(antiAfkIntervalBox.FocusLost:Connect(function()
 	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
 end))
 
-local resetRow = createRow("ResetSettingsRow", 8, settingsPage)
+local resetRow = createRow("ResetSettingsRow", 10, settingsPage)
 
 local resetLabel = Instance.new("TextLabel")
 resetLabel.Name = "Label"
@@ -2015,6 +2227,11 @@ end))
 updateHotkeyBindings()
 updateCanvasSize()
 
+if Config.AimbotEnabled then
+	aimbotControl.setState(true)
+	Aimbot.start()
+end
+
 updateMiniStatus = function()
 	local active = {}
 	if flyControl.isEnabled() then
@@ -2037,6 +2254,12 @@ updateMiniStatus = function()
 	end
 	if fullBrightControl.isEnabled() then
 		table.insert(active, "B")
+	end
+	if fovCircleControl.isEnabled() then
+		table.insert(active, "O")
+	end
+	if aimbotControl.isEnabled() then
+		table.insert(active, "M")
 	end
 	miniStatus.Text = table.concat(active, " ")
 end
@@ -2115,12 +2338,15 @@ resetSettings = function()
 	Config.ClickerHotkey = Enum.KeyCode.C
 	Config.ESPHotkey = Enum.KeyCode.V
 	Config.GuiHotkey = Enum.KeyCode.RightShift
+	Config.AimbotHotkey = Enum.KeyCode.B
 	Config.AntiAFKInterval = 120
 	Config.ClickInterval = 0.1
+	Config.FOVCircleRadius = 120
 	Config.ClickButton = "Left"
 	Config.ClickTargetEnabled = false
 	Config.ClickTargetX = nil
 	Config.ClickTargetY = nil
+	Config.AimbotEnabled = false
 	sessionState.Hotkeys = {}
 	sessionState.Settings = {}
 	sessionState.Collapsed = false
@@ -2143,10 +2369,14 @@ resetSettings = function()
 	fastSpeedBox.Text = tostring(Config.FastSpeed)
 	antiAfkIntervalBox.Text = tostring(Config.AntiAFKInterval)
 	clickDelayBox.Text = tostring(Config.ClickInterval)
+	fovRadiusBox.Text = tostring(Config.FOVCircleRadius)
+	updateFOVCircle()
 	clickModeButton.Text = Config.ClickButton
 	clickTargetButton.Text = "Mouse"
 	clickTargetMarker.Visible = false
 	clickTargetMarker.Position = saveClickTargetPosition(getDefaultClickTargetPosition())
+	aimbotControl.setState(false)
+	Aimbot.stop()
 	updateHotkeyBindings()
 	updateMiniStatus()
 	queueSaveSettings()
@@ -2283,6 +2513,8 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 		else
 			collapseGui()
 		end
+	elseif input.KeyCode == Config.AimbotHotkey then
+		aimbotControl.toggle()
 	end
 end))
 
@@ -2317,6 +2549,8 @@ track(screenGui.Destroying:Connect(function()
 	Clicker.stop()
 	ESP.stop()
 	FullBright.stop()
+	FOVCircle.stop()
+	Aimbot.stop()
 	if invisibilityControl then
 		Invisibility.toggle(false)
 	end
@@ -2329,5 +2563,3 @@ track(screenGui.Destroying:Connect(function()
 	saveSettingsNow()
 	table.clear(uiConnections)
 end))
-
-
