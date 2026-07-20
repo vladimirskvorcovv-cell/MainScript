@@ -1055,111 +1055,110 @@ clickTargetMarker.Position = saveClickTargetPosition(clickTargetMarker.Position)
 
 local ESP = {
 	Enabled = false,
-	_conn = nil,
-	_boxes = {},
+	_highlights = {},
+	_playerConnections = {},
+	_humanoidConnections = {},
+	_playerAdded = nil,
+	_playerRemoving = nil,
 }
 
-local function getEspBox(player)
-	local box = ESP._boxes[player]
-	if box and box.Parent then
-		return box
+local espFillColor = Color3.fromRGB(20, 255, 90)
+local espOutlineColor = Color3.fromRGB(185, 255, 195)
+
+local function getEspHighlight(player)
+	local highlight = ESP._highlights[player]
+	if highlight and highlight.Parent then
+		return highlight
 	end
 
-	box = Instance.new("Frame")
-	box.Name = "ESP_" .. player.Name
-	box.BackgroundTransparency = 1
-	box.BorderSizePixel = 0
-	box.Visible = false
-	box.ZIndex = 25
-	box.Parent = screenGui
-	addStroke(box, Color3.fromRGB(255, 80, 80), 0)
-	ESP._boxes[player] = box
-
-	return box
-end
-
-local function getCharacterBox(character)
-	local ok, cframe, size = pcall(function()
-		return character:GetBoundingBox()
+	highlight = Instance.new("Highlight")
+	highlight.Name = "ESP_" .. player.Name
+	highlight.FillColor = espFillColor
+	highlight.FillTransparency = 0.45
+	highlight.OutlineColor = espOutlineColor
+	highlight.OutlineTransparency = 0.03
+	highlight.Enabled = false
+	pcall(function()
+		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	end)
-	if not ok then
-		return nil
-	end
+	highlight.Parent = screenGui
+	ESP._highlights[player] = highlight
 
-	local camera = Workspace.CurrentCamera
-	if not camera then
-		return nil
-	end
-
-	local minX = math.huge
-	local minY = math.huge
-	local maxX = -math.huge
-	local maxY = -math.huge
-	local visible = false
-
-	for _, x in ipairs({ -0.5, 0.5 }) do
-		for _, y in ipairs({ -0.5, 0.5 }) do
-			for _, z in ipairs({ -0.5, 0.5 }) do
-				local world = cframe:PointToWorldSpace(Vector3.new(size.X * x, size.Y * y, size.Z * z))
-				local point, onScreen = camera:WorldToViewportPoint(world)
-				if point.Z > 0 then
-					minX = math.min(minX, point.X)
-					minY = math.min(minY, point.Y)
-					maxX = math.max(maxX, point.X)
-					maxY = math.max(maxY, point.Y)
-					visible = visible or onScreen
-				end
-			end
-		end
-	end
-
-	if not visible or minX == math.huge then
-		return nil
-	end
-
-	local viewport = getViewportSize()
-	minX = math.clamp(minX, 0, viewport.X)
-	minY = math.clamp(minY, 0, viewport.Y)
-	maxX = math.clamp(maxX, 0, viewport.X)
-	maxY = math.clamp(maxY, 0, viewport.Y)
-
-	local width = maxX - minX
-	local height = maxY - minY
-	if width < 4 or height < 4 then
-		return nil
-	end
-
-	return minX, minY, width, height
+	return highlight
 end
 
-local function updateESP()
-	local alive = {}
+local function disconnectEspPlayer(player)
+	local connections = ESP._playerConnections[player]
+	if connections then
+		for _, connection in ipairs(connections) do
+			disconnect(connection)
+		end
+		ESP._playerConnections[player] = nil
+	end
+	disconnect(ESP._humanoidConnections[player])
+	ESP._humanoidConnections[player] = nil
+end
 
-	for _, player in ipairs(Players:GetPlayers()) do
-		alive[player] = true
-		local box = getEspBox(player)
-		local character = player.Character
-		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		if character and humanoid and humanoid.Health > 0 then
-			local x, y, width, height = getCharacterBox(character)
-			if x then
-				box.Position = UDim2.fromOffset(x, y)
-				box.Size = UDim2.fromOffset(width, height)
-				box.Visible = true
-			else
-				box.Visible = false
+local function removeEspHighlight(player)
+	local highlight = ESP._highlights[player]
+	if highlight then
+		highlight:Destroy()
+		ESP._highlights[player] = nil
+	end
+end
+
+local function applyESPToPlayer(player)
+	if not ESP.Enabled then
+		return
+	end
+
+	local highlight = getEspHighlight(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+	if character and humanoid and humanoid.Health > 0 then
+		highlight.Adornee = character
+		highlight.Enabled = true
+		disconnect(ESP._humanoidConnections[player])
+		ESP._humanoidConnections[player] = humanoid.Died:Connect(function()
+			highlight.Enabled = false
+			highlight.Adornee = nil
+		end)
+	else
+		highlight.Enabled = false
+		highlight.Adornee = nil
+	end
+end
+
+local function bindESPPlayer(player)
+	if ESP._playerConnections[player] then
+		applyESPToPlayer(player)
+		return
+	end
+
+	ESP._playerConnections[player] = {
+		player.CharacterAdded:Connect(function(character)
+			task.defer(function()
+				if ESP.Enabled and character.Parent then
+					if not character:FindFirstChildOfClass("Humanoid") then
+						character:WaitForChild("Humanoid", 5)
+					end
+					applyESPToPlayer(player)
+				end
+			end)
+		end),
+		player.CharacterRemoving:Connect(function()
+			local highlight = ESP._highlights[player]
+			if highlight then
+				highlight.Enabled = false
+				highlight.Adornee = nil
 			end
-		else
-			box.Visible = false
-		end
-	end
+			disconnect(ESP._humanoidConnections[player])
+			ESP._humanoidConnections[player] = nil
+		end),
+	}
 
-	for player, box in pairs(ESP._boxes) do
-		if not alive[player] or not player.Parent then
-			box:Destroy()
-			ESP._boxes[player] = nil
-		end
-	end
+	applyESPToPlayer(player)
 end
 
 function ESP.start()
@@ -1167,22 +1166,39 @@ function ESP.start()
 		return true
 	end
 	ESP.Enabled = true
-	ESP._conn = RunService.RenderStepped:Connect(updateESP)
-	updateESP()
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		bindESPPlayer(player)
+	end
+
+	ESP._playerAdded = Players.PlayerAdded:Connect(function(player)
+		bindESPPlayer(player)
+	end)
+	ESP._playerRemoving = Players.PlayerRemoving:Connect(function(player)
+		disconnectEspPlayer(player)
+		removeEspHighlight(player)
+	end)
+
 	return true
 end
 
 function ESP.stop()
-	if not ESP.Enabled and not ESP._conn then
+	if not ESP.Enabled and not ESP._playerAdded and not ESP._playerRemoving then
 		return true
 	end
 	ESP.Enabled = false
-	disconnect(ESP._conn)
-	ESP._conn = nil
-	for player, box in pairs(ESP._boxes) do
-		box:Destroy()
-		ESP._boxes[player] = nil
+	disconnect(ESP._playerAdded)
+	disconnect(ESP._playerRemoving)
+	ESP._playerAdded = nil
+	ESP._playerRemoving = nil
+
+	for player in pairs(ESP._playerConnections) do
+		disconnectEspPlayer(player)
 	end
+	for player in pairs(ESP._highlights) do
+		removeEspHighlight(player)
+	end
+
 	return true
 end
 
@@ -1192,7 +1208,6 @@ function ESP.toggle(state)
 	end
 	return ESP.stop()
 end
-
 local function createRow(name, order, parentPage)
 	local row = Instance.new("Frame")
 	row.Name = name
