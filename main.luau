@@ -1530,6 +1530,7 @@ local Vegetation = {
 	_descendantAdded = nil,
 	_originalTransparency = setmetatable({}, { __mode = "k" }),
 	_terrain = nil,
+	_terrainChanged = nil,
 	_terrainDecoration = nil,
 	_terrainDecorationSaved = false,
 }
@@ -1555,11 +1556,15 @@ local function isVegetationPart(part)
 		return false
 	end
 
-	local name = string.lower(part.Name)
-	for _, keyword in ipairs(vegetationKeywords) do
-		if string.find(name, keyword, 1, true) then
-			return true
+	local current = part
+	while current and current ~= Workspace do
+		local name = string.lower(current.Name)
+		for _, keyword in ipairs(vegetationKeywords) do
+			if string.find(name, keyword, 1, true) then
+				return true
+			end
 		end
+		current = current.Parent
 	end
 
 	local materialName = part.Material.Name
@@ -1601,8 +1606,18 @@ function Vegetation.start()
 			Vegetation._terrain = terrain
 			Vegetation._terrainDecoration = decoration
 			Vegetation._terrainDecorationSaved = true
-			pcall(function()
-				terrain.Decoration = false
+			local function disableTerrainDecoration()
+				pcall(function()
+					if terrain.Decoration then
+						terrain.Decoration = false
+					end
+				end)
+			end
+			disableTerrainDecoration()
+			Vegetation._terrainChanged = terrain:GetPropertyChangedSignal("Decoration"):Connect(function()
+				if Vegetation.Enabled then
+					disableTerrainDecoration()
+				end
 			end)
 		end
 	end
@@ -1617,7 +1632,9 @@ function Vegetation.stop()
 
 	Vegetation.Enabled = false
 	disconnect(Vegetation._descendantAdded)
+	disconnect(Vegetation._terrainChanged)
 	Vegetation._descendantAdded = nil
+	Vegetation._terrainChanged = nil
 
 	for part, originalTransparency in pairs(Vegetation._originalTransparency) do
 		if part.Parent then
@@ -2457,4 +2474,3 @@ track(screenGui.Destroying:Connect(function()
 	saveSettingsNow()
 	table.clear(uiConnections)
 end))
-
